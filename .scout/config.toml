@@ -1,7 +1,12 @@
 [scout]
-model = "qwen/qwen3.6-27b"
+provider = "openrouter"
+model = "moonshotai/kimi-k3"
+sandbox = true
 gate = "uvx ruff check scout.py scoutlib tests && uv run pytest -q"
 max_rounds = 24
 bash_timeout = 180
 gate_timeout = 600
+recon_max_rounds = 16
 # exclude = ["devlog"]  # sparse-checkout paths out of sortie worktrees (blind experiments)
+# provider = "ollama"; model = "qwen3.6:latest"   # local alternative via pi
+# provider = "lmstudio"                            # in-process LM Studio SDK (the v0 path)

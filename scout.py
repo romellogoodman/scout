@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from datetime import UTC, datetime
@@ -55,6 +57,41 @@ Rules:
   anything that surprised you. Do not paste the diff into the report.
 """
 
+# pi exposes read/write/edit/bash rather than the SDK's named tools, so the pi
+# path gets prompts worded for those. The rules are otherwise identical — the
+# "stop if the spec is wrong" line is load-bearing (see devlog).
+PI_BUILD_PROMPT = """\
+You are a scout: a short-lived autonomous coding agent working alone in a
+checkout of a repository. You have tools to read files, write files, and run
+bash commands. All paths are relative to the repository root.
+
+Rules:
+- Work only toward the objective you are given. Make the smallest change that
+  achieves it.
+- Verify your work by running the gate command with the bash tool: `{gate}`
+- You get two gate attempts. If the gate still fails after your second attempt,
+  stop and report honestly what you tried and where it failed.
+- Coming back empty-handed is honorable. A plausible-looking but wrong change
+  is not.
+- If the objective or the tests themselves appear contradictory or wrong, stop
+  and report that instead of special-casing your way around it.
+- Finish by replying with a short plain-text report: what you changed, why, and
+  anything that surprised you. Do not paste the diff into the report.
+"""
+
+PI_RECON_PROMPT = """\
+You are a scout on a reconnaissance sortie: answer a question about the
+repository you are standing in. Use your tools read-only: read files and grep
+with bash. Do not modify anything.
+
+Rules:
+- Answer only from what you actually read in this repository. If you cannot
+  find the answer, say so plainly — a wrong answer is worse than no answer.
+- Cite file paths (with line numbers where useful) for every claim.
+- Finish with a concise prose answer to the question. No code changes, no
+  diffs, no speculation beyond what the files support.
+"""
+
 
 class ScoutError(RuntimeError):
     pass
@@ -75,7 +112,16 @@ def load_config(repo_root: str | Path) -> dict:
     if not gate or not str(gate).strip():
         raise ScoutError("config has no gate command — refusing to run")
     return {
-        "model": cfg.get("model", "qwen/qwen3.6-27b"),
+        # provider selects the inference backend. "openrouter" (default) and any
+        # other pi-supported provider ("ollama", …) run through the pi CLI;
+        # "lmstudio" uses the in-process LM Studio SDK (the v0 path).
+        "provider": str(cfg.get("provider", "openrouter")),
+        "model": cfg.get("model", "moonshotai/kimi-k3"),
+        # Optional reasoning-effort passthrough for pi providers that require or
+        # accept it (e.g. some models mandate thinking).
+        "thinking": cfg.get("thinking"),
+        # Confine pi-run sorties with the Seatbelt sandbox. Ignored for lmstudio.
+        "sandbox": bool(cfg.get("sandbox", True)),
         "gate": str(gate),
         "max_rounds": int(cfg.get("max_rounds", 24)),
         "bash_timeout": int(cfg.get("bash_timeout", 180)),
@@ -229,6 +275,107 @@ def make_recon_tools(root: Path) -> list:
     return [list_files, read_file, grep]
 
 
+# ---------- pi backend ----------
+
+def _pi_profile(repo_root: Path, kind: str) -> Path | None:
+    """Locate the Seatbelt profile for a build or recon run. Returns None when the
+    platform can't sandbox (non-macOS, or sandbox-exec/profile absent) — the run
+    then proceeds unconfined rather than failing."""
+    if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
+        return None
+    name = "scout_sandbox_recon.sb" if kind == "recon" else "scout_sandbox.sb"
+    p = repo_root / "tools" / name
+    return p if p.exists() else None
+
+
+def _pi_session_usage(sess: Path) -> dict | None:
+    """Roll up token usage and cost across pi's session journal."""
+    if not sess.exists():
+        return None
+    tot = {"input": 0, "output": 0, "reasoning": 0, "cache_read": 0,
+           "total_tokens": 0, "cost_usd": 0.0}
+    seen = False
+    for f in sess.glob("*.jsonl"):
+        for line in f.read_text().splitlines():
+            try:
+                u = (json.loads(line).get("message") or {}).get("usage")
+            except json.JSONDecodeError:
+                continue
+            if not u:
+                continue
+            seen = True
+            tot["input"] += u.get("input", 0)
+            tot["output"] += u.get("output", 0)
+            tot["reasoning"] += u.get("reasoning", 0)
+            tot["cache_read"] += u.get("cacheRead", 0)
+            tot["total_tokens"] += u.get("totalTokens", 0)
+            tot["cost_usd"] += (u.get("cost") or {}).get("total", 0.0)
+    return tot if seen else None
+
+
+def _pi_journal(sess: Path) -> str:
+    """Best-effort readable journal from pi's session jsonl (text + tool calls)."""
+    out: list[str] = []
+    if not sess.exists():
+        return "(no journal)"
+    for f in sorted(sess.glob("*.jsonl")):
+        for raw in f.read_text().splitlines():
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            for part in (ev.get("message") or {}).get("content", []) or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text" and part.get("text"):
+                    out.append(part["text"])
+                elif part.get("type") == "toolCall":
+                    a = part.get("arguments", {}) or {}
+                    detail = a.get("command") or a.get("path") or ""
+                    out.append(f"[tool: {part.get('name')}] {str(detail)[:200]}")
+    return "\n\n".join(out) or "(no journal)"
+
+
+def run_pi_agent(*, cwd: Path, cfg: dict, system_prompt: str, user_msg: str,
+                 read_only: bool, worktree: Path, profile: Path | None,
+                 timeout: int) -> dict:
+    """Run one pi sortie. The sandbox denies writes under ~/code and node fstat()s
+    its own stdio at startup, so pi's session lands in tmp and the report comes
+    back on stdout — the caller archives both. Returns report/journal/usage/error."""
+    sess_parent = Path(tempfile.mkdtemp(prefix="scout-pi-"))
+    sess = sess_parent / "session"
+
+    cmd: list[str] = []
+    if profile is not None:
+        cmd += ["sandbox-exec", "-D", f"WORKTREE={worktree}", "-f", str(profile)]
+    cmd += ["pi", "--provider", cfg["provider"], "--model", cfg["model"],
+            "--system-prompt", system_prompt,
+            "--no-extensions", "--no-skills", "--no-context-files",
+            "--session-dir", str(sess)]
+    if cfg.get("thinking"):
+        cmd += ["--thinking", str(cfg["thinking"])]
+    if read_only:
+        cmd += ["--tools", "read,bash"]
+    cmd += ["-p", user_msg]
+
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    report, error = "", None
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           timeout=timeout, env=env, check=False)
+        report = (p.stdout or "").strip()
+        if p.returncode != 0:
+            error = f"pi exit {p.returncode}: {(p.stderr or '').strip()[:400]}"
+    except FileNotFoundError:
+        error = "pi not found on PATH"
+    except subprocess.TimeoutExpired:
+        error = f"pi timed out after {timeout}s"
+
+    return {"report": report or "(no report)", "journal": _pi_journal(sess),
+            "usage": _pi_session_usage(sess), "error": error,
+            "session": sess, "session_parent": sess_parent}
+
+
 def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
     """A recon sortie: read-only, no worktree, no gate, no branch. Prose out."""
     started = datetime.now(tz=UTC)
@@ -237,56 +384,58 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
     sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
     timing: dict[str, float] = {}
 
-    import lmstudio as lms
-    # Default is 60s per API call — a request queued behind n_parallel saturated
-    # decode slots dies through no fault of its own. Concurrency needs headroom.
-    lms.set_sync_api_timeout(900)
-
-    journal: list[str] = []
-    last_assistant: list[str] = []
-    parse_failures = {"n": 0}
-    act_error = None
-
-    def on_round_start(round_index: int) -> None:
-        print(f"[recon] round {round_index + 1}", flush=True)
-
-    def on_message(msg) -> None:
-        text = _msg_text(msg)
-        journal.append(text)
-        if type(msg).__name__ == "AssistantResponse":
-            last_assistant.append(text)
-        print(f"[recon] {' '.join(text.split())[:200]}", flush=True)
-
-    def on_invalid_tool_request(error, request):
-        parse_failures["n"] += 1
-        return (f"Your tool call could not be parsed ({error}). "
-                "Re-issue it as a single valid tool call.")
+    report_text, journal_text, rounds, usage, act_error = "(no report)", "(no messages)", None, None, None
 
     t = time.monotonic()
-    result = None
-    try:
-        model = lms.llm(cfg["model"])
-        chat = lms.Chat(RECON_PROMPT)
-        chat.add_user_message(f"Question: {question}")
-        result = model.act(
-            chat,
-            make_recon_tools(target),
-            max_prediction_rounds=cfg["recon_max_rounds"],
-            on_message=on_message,
-            on_round_start=on_round_start,
-            handle_invalid_tool_request=on_invalid_tool_request,
-        )
-    except (RuntimeError, OSError, lms.LMStudioError) as e:
-        act_error = f"{type(e).__name__}: {e}"
-        print(f"[recon] act failed: {act_error}", flush=True)
+    if cfg["provider"] == "lmstudio":
+        import lmstudio as lms
+        lms.set_sync_api_timeout(900)  # queue wait under concurrency needs headroom
+        journal: list[str] = []
+        last_assistant: list[str] = []
+
+        def on_message(msg) -> None:
+            text = _msg_text(msg)
+            journal.append(text)
+            if type(msg).__name__ == "AssistantResponse":
+                last_assistant.append(text)
+            print(f"[recon] {' '.join(text.split())[:200]}", flush=True)
+
+        try:
+            model = lms.llm(cfg["model"])
+            chat = lms.Chat(RECON_PROMPT)
+            chat.add_user_message(f"Question: {question}")
+            result = model.act(
+                chat, make_recon_tools(target),
+                max_prediction_rounds=cfg["recon_max_rounds"],
+                on_message=on_message,
+                on_round_start=lambda i: print(f"[recon] round {i + 1}", flush=True),
+                handle_invalid_tool_request=lambda e, r: (
+                    f"Your tool call could not be parsed ({e}). "
+                    "Re-issue it as a single valid tool call."),
+            )
+            rounds = result.rounds
+        except (RuntimeError, OSError, lms.LMStudioError) as e:
+            act_error = f"{type(e).__name__}: {e}"
+            print(f"[recon] act failed: {act_error}", flush=True)
+        report_text = _strip_think(last_assistant[-1]) if last_assistant else "(no report)"
+        journal_text = "\n\n---\n\n".join(journal) or "(no messages)"
+    else:
+        profile = _pi_profile(repo_root, "recon") if cfg["sandbox"] else None
+        print(f"[recon] pi {cfg['provider']}/{cfg['model']}"
+              f"{' (sandboxed)' if profile else ''}", flush=True)
+        r = run_pi_agent(cwd=target, cfg=cfg, system_prompt=PI_RECON_PROMPT,
+                         user_msg=f"Question: {question}", read_only=True,
+                         worktree=target, profile=profile, timeout=cfg["gate_timeout"])
+        report_text, journal_text, usage, act_error = (
+            r["report"], r["journal"], r["usage"], r["error"])
+        shutil.rmtree(r["session_parent"], ignore_errors=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
     timing["total_s"] = timing["inference_s"]
 
     sortie_dir.mkdir(parents=True, exist_ok=True)
     (sortie_dir / "objective.md").write_text(question + "\n")
-    (sortie_dir / "journal.md").write_text("\n\n---\n\n".join(journal) or "(no messages)\n")
-    (sortie_dir / "report.md").write_text(
-        (_strip_think(last_assistant[-1]) if last_assistant else "(no report)") + "\n")
+    (sortie_dir / "journal.md").write_text(journal_text + "\n")
+    (sortie_dir / "report.md").write_text(report_text + "\n")
 
     manifest = {
         "id": sid,
@@ -294,9 +443,10 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
         "objective": question,
         "target": str(target),
         "status": "error" if act_error else "recon-complete",
+        "provider": cfg["provider"],
         "model": cfg["model"],
-        "rounds": result.rounds if result else None,
-        "tool_parse_failures": parse_failures["n"],
+        "rounds": rounds,
+        "usage": usage,
         "act_error": act_error,
         "timing": timing,
         "created": started.isoformat(timespec="seconds"),
@@ -312,64 +462,85 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
            f"-{crude_slug(objective)}")
     branch = f"scout/{sid}"
-    wt = repo_root / WORKTREES / sid
+    # Sandboxed runs put the worktree in tmp: the Seatbelt profile denies ~/code,
+    # so an in-repo worktree would be unreadable to the scout. Unsandboxed runs
+    # keep it in-repo. The shared .git lives in repo_root either way; the gate
+    # (lint+tests) doesn't touch it, and commit/teardown run unsandboxed.
+    sandboxed = cfg["provider"] != "lmstudio" and cfg["sandbox"]
+    profile = _pi_profile(repo_root, "build") if sandboxed else None
+    if profile is not None:
+        wt_parent = Path(tempfile.mkdtemp(prefix="scout-wt-"))
+        wt = wt_parent / "wt"
+    else:
+        wt_parent = None
+        wt = repo_root / WORKTREES / sid
     sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
     timing: dict[str, float] = {}
 
     # -- setup: worktree on a fresh branch from HEAD
     t = time.monotonic()
-    wt.parent.mkdir(exist_ok=True)
+    if wt_parent is None:
+        wt.parent.mkdir(exist_ok=True)
     git(repo_root, "worktree", "add", "-b", branch, str(wt), "HEAD")
     if cfg["exclude"]:
         git(wt, "sparse-checkout", "set", "--no-cone", "/*",
             *[f"!/{p}" for p in cfg["exclude"]])
     timing["setup_s"] = round(time.monotonic() - t, 2)
 
-    # -- inference: the act loop
-    import lmstudio as lms  # lazy: tests and --help shouldn't need a server
-    lms.set_sync_api_timeout(900)  # queue wait under concurrency; see run_recon
-
-    journal: list[str] = []
-    last_assistant: list[str] = []
-    parse_failures = {"n": 0}
     status, exit_reason, act_error = "error", "unknown", None
+    report_text, journal_text, rounds, usage = "(no report)", "(no messages)", None, None
 
-    def on_round_start(round_index: int) -> None:
-        print(f"[scout] round {round_index + 1}", flush=True)
-
-    def on_message(msg) -> None:
-        text = _msg_text(msg)
-        journal.append(text)
-        if type(msg).__name__ == "AssistantResponse":
-            last_assistant.append(text)
-        preview = " ".join(text.split())[:200]
-        print(f"[scout] {preview}", flush=True)
-
-    def on_invalid_tool_request(error, request):
-        # One malformed call must not vaporize a sortie: feed the parse error
-        # back to the model as the tool result so it can re-issue the call.
-        parse_failures["n"] += 1
-        print(f"[scout] malformed tool call #{parse_failures['n']}: {error}", flush=True)
-        return (f"Your tool call could not be parsed ({error}). "
-                "Re-issue it as a single valid tool call.")
-
+    # -- inference: provider-dispatched
     t = time.monotonic()
-    result = None
-    try:
-        model = lms.llm(cfg["model"])
-        chat = lms.Chat(SYSTEM_PROMPT.format(gate=cfg["gate"]))
-        chat.add_user_message(f"Objective: {objective}")
-        result = model.act(
-            chat,
-            make_tools(wt, cfg["bash_timeout"]),
-            max_prediction_rounds=cfg["max_rounds"],
-            on_message=on_message,
-            on_round_start=on_round_start,
-            handle_invalid_tool_request=on_invalid_tool_request,
-        )
-    except (RuntimeError, OSError, lms.LMStudioError) as e:  # archive what we have; the notebook outlives the crash
-        act_error = f"{type(e).__name__}: {e}"
-        print(f"[scout] act failed: {act_error}", flush=True)
+    if cfg["provider"] == "lmstudio":
+        import lmstudio as lms  # lazy: tests and --help shouldn't need a server
+        lms.set_sync_api_timeout(900)  # queue wait under concurrency; see run_recon
+        journal: list[str] = []
+        last_assistant: list[str] = []
+        parse_failures = {"n": 0}
+
+        def on_message(msg) -> None:
+            text = _msg_text(msg)
+            journal.append(text)
+            if type(msg).__name__ == "AssistantResponse":
+                last_assistant.append(text)
+            print(f"[scout] {' '.join(text.split())[:200]}", flush=True)
+
+        def on_invalid_tool_request(error, request):
+            # One malformed call must not vaporize a sortie: feed the parse error
+            # back so the model can re-issue the call.
+            parse_failures["n"] += 1
+            print(f"[scout] malformed tool call #{parse_failures['n']}: {error}", flush=True)
+            return (f"Your tool call could not be parsed ({error}). "
+                    "Re-issue it as a single valid tool call.")
+
+        try:
+            model = lms.llm(cfg["model"])
+            chat = lms.Chat(SYSTEM_PROMPT.format(gate=cfg["gate"]))
+            chat.add_user_message(f"Objective: {objective}")
+            result = model.act(
+                chat, make_tools(wt, cfg["bash_timeout"]),
+                max_prediction_rounds=cfg["max_rounds"],
+                on_message=on_message,
+                on_round_start=lambda i: print(f"[scout] round {i + 1}", flush=True),
+                handle_invalid_tool_request=on_invalid_tool_request,
+            )
+            rounds = result.rounds
+        except (RuntimeError, OSError, lms.LMStudioError) as e:  # notebook outlives the crash
+            act_error = f"{type(e).__name__}: {e}"
+            print(f"[scout] act failed: {act_error}", flush=True)
+        report_text = _strip_think(last_assistant[-1]) if last_assistant else "(no report)"
+        journal_text = "\n\n---\n\n".join(journal) or "(no messages)"
+    else:
+        print(f"[scout] pi {cfg['provider']}/{cfg['model']}"
+              f"{' (sandboxed)' if profile else ''}", flush=True)
+        r = run_pi_agent(cwd=wt, cfg=cfg,
+                         system_prompt=PI_BUILD_PROMPT.format(gate=cfg["gate"]),
+                         user_msg=f"Objective: {objective}", read_only=False,
+                         worktree=wt, profile=profile, timeout=cfg["gate_timeout"])
+        report_text, journal_text, usage, act_error = (
+            r["report"], r["journal"], r["usage"], r["error"])
+        shutil.rmtree(r["session_parent"], ignore_errors=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
 
     # -- gate: the harness runs the official one regardless of what the scout claims
@@ -406,9 +577,8 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     # -- archive BEFORE teardown, always
     sortie_dir.mkdir(parents=True, exist_ok=True)
     (sortie_dir / "objective.md").write_text(objective + "\n")
-    (sortie_dir / "journal.md").write_text("\n\n---\n\n".join(journal) or "(no messages)\n")
-    (sortie_dir / "report.md").write_text(
-        (_strip_think(last_assistant[-1]) if last_assistant else "(no report)") + "\n")
+    (sortie_dir / "journal.md").write_text(journal_text + "\n")
+    (sortie_dir / "report.md").write_text(report_text + "\n")
     (sortie_dir / "diff.patch").write_text(diff_text)
     (sortie_dir / "gate.log").write_text(gate_log)
 
@@ -418,6 +588,8 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     git(repo_root, "worktree", "remove", "--force", str(wt))
     if status != "clear":
         git(repo_root, "branch", "-D", branch)
+    if wt_parent is not None:
+        shutil.rmtree(wt_parent, ignore_errors=True)
     timing["teardown_s"] = round(time.monotonic() - t, 2)
     timing["total_s"] = round(sum(timing.values()), 2)
 
@@ -427,11 +599,12 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         "status": status,
         "exit_reason": exit_reason,
         "branch": branch if status == "clear" else None,
+        "provider": cfg["provider"],
         "model": cfg["model"],
         "gate": {"cmd": cfg["gate"], "exit_code": gate_code},
         "diff": stats,
-        "rounds": result.rounds if result else None,
-        "tool_parse_failures": parse_failures["n"],
+        "rounds": rounds,
+        "usage": usage,
         "act_error": act_error,
         "timing": timing,
         "created": started.isoformat(timespec="seconds"),
@@ -461,22 +634,36 @@ def main() -> int:
                 raise ScoutError(f"recon target is not a directory: {target}")
             m = run_recon(args.objective, target, repo_root, cfg)
             t = m["timing"]
-            print(f"\nrecon {m['id']}  status={m['status']}")
-            print(f"inference {t['inference_s']}s | rounds: {m['rounds']}")
+            print(f"\nrecon {m['id']}  status={m['status']}  "
+                  f"[{m['provider']}/{m['model']}]")
+            print(f"inference {t['inference_s']}s | {_usage_line(m['usage'])}")
+            if m["act_error"]:
+                print(f"error: {m['act_error']}", file=sys.stderr)
             return 0 if m["status"] == "recon-complete" else 1
         m = run_sortie(args.objective, repo_root, cfg)
     except ScoutError as e:
         print(f"scout: {e}", file=sys.stderr)
         return 1
     t = m["timing"]
-    print(f"\nsortie {m['id']}  status={m['status']} ({m['exit_reason']})")
+    print(f"\nsortie {m['id']}  status={m['status']} ({m['exit_reason']})  "
+          f"[{m['provider']}/{m['model']}]")
     print(f"setup {t['setup_s']}s | inference {t['inference_s']}s | "
           f"gate {t['gate_s']}s | teardown {t['teardown_s']}s | total {t['total_s']}s")
-    print(f"rounds: {m['rounds']}  diff: {m['diff']['files']} files "
-          f"+{m['diff']['insertions']}/-{m['diff']['deletions']}")
+    print(f"diff: {m['diff']['files']} files "
+          f"+{m['diff']['insertions']}/-{m['diff']['deletions']} | {_usage_line(m['usage'])}")
+    if m["act_error"]:
+        print(f"error: {m['act_error']}", file=sys.stderr)
     if m["branch"]:
         print(f"branch: {m['branch']}")
     return 0 if m["status"] == "clear" else 1
+
+
+def _usage_line(usage: dict | None) -> str:
+    if not usage:
+        return "usage: n/a"
+    return (f"tokens: {usage['total_tokens']} "
+            f"(in {usage['input']} / out {usage['output']}) | "
+            f"cost: ${usage['cost_usd']:.4f}")
 
 
 if __name__ == "__main__":

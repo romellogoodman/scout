@@ -1,0 +1,41 @@
+;; Seatbelt profile for recon sorties (read-only).
+;;
+;; Recon must READ the target repo — which often lives under ~/code — so unlike
+;; the build profile this one does NOT deny ~/code. Instead it denies all writes
+;; (recon changes nothing) and denies reads of secrets. The scout can read the
+;; target and the rest of the tree; it cannot write anywhere but tmp/caches, and
+;; cannot read ssh keys, cloud creds, or keychains.
+;;
+;; Invoke: sandbox-exec -D WORKTREE=<target> -f scout_sandbox_recon.sb <cmd...>
+;; (WORKTREE is accepted for call-site symmetry with the build profile; recon
+;;  grants no writes to it.)
+;;
+;; Residuals (v1): broad network egress and the scout reading its own provider
+;; key are not closed here — bounded by the OpenRouter credit cap.
+
+(version 1)
+(allow default)
+
+;; ---- reads: deny the crown jewels ----
+(deny file-read*
+  (subpath "/Users/romello/.ssh")
+  (subpath "/Users/romello/.aws")
+  (subpath "/Users/romello/.gnupg")
+  (subpath "/Users/romello/.config/gh")
+  (subpath "/Users/romello/.config/gcloud")
+  (subpath "/Users/romello/Library/Keychains")
+  (literal "/Users/romello/.netrc")
+  (literal "/Users/romello/.npmrc")
+  (literal "/Users/romello/.zsh_history")
+  (literal "/Users/romello/.bash_history"))
+
+;; ---- writes: recon modifies nothing under home except pi/uv scratch ----
+(deny file-write* (subpath "/Users/romello"))
+(allow file-write*
+  (subpath "/Users/romello/.pi")
+  (subpath "/Users/romello/.cache/uv")
+  (subpath "/Users/romello/.cache/ruff")
+  (subpath "/Users/romello/.cache/uvx")
+  (subpath "/Users/romello/.local/share/uv")
+  (subpath "/Users/romello/.local/state/uv"))
+;; tmp (pi's session) and /dev are outside home; (allow default) covers them.
