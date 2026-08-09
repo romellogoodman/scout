@@ -11,6 +11,7 @@ One file per entry, `YYYY-MM-DD-slug.md`. Newest first.
 
 | Date | Entry | What it covers |
 |------|-------|----------------|
+| 2026-08-09 | [Sorties become treks](2026-08-09-sorties-become-treks.md) | Military framing out, camping in: trek/survey/search party; survivor and dispatcher retired; 14 proposed renames triaged to 3 (operational vs narrative vs tool-name terms); the seam placed on user surfaces, frozen off experimental ones (prompts, archive paths, verdicts) |
 | 2026-08-09 | [The harness never imports its cargo](2026-08-09-the-harness-never-imports-its-cargo.md) | Desplopify finds the slop in the sortie-built code (−44 lines); the crude_* "placeholders" declared permanent — scout.py never imports scoutlib (trust boundary, not unfinished migration); rearchitecting rejected: generic layout is blinding, paths are frozen conditions |
 | 2026-08-09 | [Build-anywhere, and the sandbox+uv hang](2026-08-09-build-anywhere-and-the-sandbox-uv-hang.md) | Build sorties take `--repo` (SCOUT_HOME split from target); bisecting a 6-min sandboxed-build hang to `uv`/`uvx` env-provisioning under sandbox-exec — the second Seatbelt+subprocess bite, and why a container is looking like the floor |
 | 2026-08-09 | [The model was never the hard part](2026-08-09-the-model-was-never-the-hard-part.md) | Pivot to pi + OpenRouter; trap battery reranks the field (Kimi 3/3, DeepSeek 4/5, Muse 0/3); gamut proves no model sweeps and each fails differently; blinding was fake, built a real Seatbelt sandbox; sandboxed Muse fabricates anyway |

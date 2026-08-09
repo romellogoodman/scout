@@ -1,7 +1,7 @@
 [scout]
 provider = "openrouter"
 model = "moonshotai/kimi-k3"
-# Heterogeneous panel for --fanout: DIFFERENT models (different labs) so their
+# Heterogeneous panel for --search-party: DIFFERENT models (different labs) so their
 # blind spots decorrelate. Agreement across the panel is trustworthy; where they
 # diverge is the signal. Add a third for more coverage.
 panel = ["moonshotai/kimi-k3", "deepseek/deepseek-v4-flash-0731"]
@@ -12,6 +12,6 @@ max_rounds = 24
 bash_timeout = 180
 gate_timeout = 600
 recon_max_rounds = 16
-# exclude = ["devlog"]  # sparse-checkout paths out of sortie worktrees (blind experiments)
+# exclude = ["devlog"]  # sparse-checkout paths out of trek worktrees (blind experiments)
 # provider = "ollama"; model = "qwen3.6:latest"   # local alternative via pi
 # provider = "lmstudio"                            # in-process LM Studio SDK (the v0 path)

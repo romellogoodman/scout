@@ -49,4 +49,4 @@ else
   echo "skill:    $SKILLDIR/scout (copy)"
 fi
 
-echo "done. try:  scout --recon \"what does this repo do?\" --repo ."
+echo "done. try:  scout --survey \"what does this repo do?\" --repo ."

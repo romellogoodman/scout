@@ -1,13 +1,13 @@
 ---
 name: scout
-description: Delegate a bounded, verifiable coding task or codebase question to a scout — a cheap model running isolated in a sandbox behind a mechanical gate. Use to read an unfamiliar codebase without spending your own context (recon), make failing tests pass in a throwaway worktree (build), or ask one question across a diverse panel of models and compare how they answer (fan-out). Reach for it when you want to hand off scoped work whose result you can check rather than trust.
+description: Delegate a bounded, verifiable coding task or codebase question to a scout — a cheap model running isolated in a sandbox behind a mechanical gate. Use to read an unfamiliar codebase without spending your own context (survey), make failing tests pass in a throwaway worktree (build), or ask one question across a diverse panel of models and compare how they answer (search party). Reach for it when you want to hand off scoped work whose result you can check rather than trust.
 ---
 
 # Using scout
 
 Scout is a harness for disposable, verifiable delegation — the substrate you orchestrate
 through, not the orchestrator. **You are the orchestrator.** Scout hands you isolated,
-gated, throwaway workers; you decide what to dispatch, read what comes back, and
+gated, throwaway workers; you decide what to send out, read what comes back, and
 synthesize. It never decides for you.
 
 The rule that governs everything: **the report is advocacy; the diff and the gate are
@@ -17,10 +17,10 @@ Invoke via the `scout` command (installed on PATH by `install.sh`). If it isn't 
 run from the scout repo instead: `uv run python scout.py …`. Every run is archived under
 the scout repo's `.scout-agent-notebook/`.
 
-## Recon — ask about a codebase (read-only, any repo)
+## Survey — ask about a codebase (read-only, any repo)
 
 ```
-scout --recon "How does the server pick its listen port?" --repo /path/to/repo
+scout --survey "How does the server pick its listen port?" --repo /path/to/repo
 ```
 
 Returns a prose answer with file citations. Use it to understand code *without* loading
@@ -45,13 +45,13 @@ Building another repo requires that repo to carry its own `.scout/config.toml` w
 `gate`. macOS sandbox note: scout pre-warms the gate's env before a sandboxed build so the
 scout reuses it rather than provisioning under `sandbox-exec` (which can intermittently
 deadlock). If a sandboxed build hangs, kill and retry, or set `sandbox = false` for that
-repo. Recon/fan-out are unaffected.
+repo. Surveys and search parties are unaffected.
 
-## Fan-out — ask a panel of different models at once
+## Search party — ask a panel of different models at once
 
 ```
-scout --fanout "How does auth work here?" --repo /path/to/repo
-scout --fanout --questions questions.txt --repo /path/to/repo
+scout --search-party "How does auth work here?" --repo /path/to/repo
+scout --search-party --questions questions.txt --repo /path/to/repo
 ```
 
 Runs the question across a heterogeneous panel (different models, different labs) and
@@ -69,8 +69,9 @@ back**. If you can't check it or wouldn't read it, do it yourself.
 
 ## Where the output lives
 
-Each sortie: `.scout-agent-notebook/sorties/<id>/` — report, journal, diff, gate log, and
-a `manifest.json` with status, timing, and token cost. Fan-out summaries:
+Each trek: `.scout-agent-notebook/sorties/<id>/` — report, journal, diff, gate log, and
+a `manifest.json` with status, timing, and token cost (archive paths keep the project's
+original names). Search-party summaries:
 `.scout-agent-notebook/fanout/`. Config is `.scout/config.toml` (`provider`, `model`,
 `panel`, `gate`, `sandbox`). The gate is load-bearing and yours to write — a scout
 faithfully satisfies whatever spec you give it, including a bad one.

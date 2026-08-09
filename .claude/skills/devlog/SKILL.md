@@ -1,6 +1,6 @@
 ---
 name: devlog
-description: Write or update the scout dev log at devlog/. Use after running sorties, finishing a work session, making or reversing a design decision, or learning something from the numbers that contradicts what we expected. Also use when asked to log, write up, or record what happened. Check this before ending any session where something was built or measured.
+description: Write or update the scout dev log at devlog/. Use after running treks, finishing a work session, making or reversing a design decision, or learning something from the numbers that contradicts what we expected. Also use when asked to log, write up, or record what happened. Check this before ending any session where something was built or measured.
 ---
 
 # Dev log
@@ -15,7 +15,7 @@ It is **not** an ADR set. Do not write "Context / Decision / Consequences." Writ
 
 Write one when any of these happened:
 
-- Sorties ran and produced numbers — always log the numbers, especially bad ones
+- Treks ran and produced numbers — always log the numbers, especially bad ones
 - A design decision was made, or an earlier one was reversed
 - Something surprised us: a measurement that contradicted the guess, a failure mode we
   hadn't predicted, a cost that landed somewhere unexpected
@@ -39,7 +39,7 @@ the log.
    ```yaml
    ---
    date: YYYY-MM-DD
-   tags: [planning, sorties, measurement, ...]
+   tags: [planning, treks, measurement, ...]
    ---
    ```
 
@@ -78,9 +78,9 @@ new information, and retrospective confidence about things that were actually gu
 
 ## Standing measurements
 
-Sortie entries should carry these four, since they're the ones v0 exists to answer:
+Trek entries should carry these four, since they're the ones v0 exists to answer:
 
 - gate-clear rate
 - time split: setup / inference / gate / teardown
-- merge rate among survivors — of the diffs that passed, how many were taken unedited
+- merge rate among clears — of the diffs that passed, how many were taken unedited
 - dominant failure mode: looping, plausible-but-wrong, or refusal to finish

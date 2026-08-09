@@ -12,7 +12,7 @@ Two properties make that safe:
 
 - **It can't fake the check.** The harness runs the gate itself, not the model — so
   "tests pass" means they actually pass.
-- **It can't touch what it shouldn't.** Sorties run inside a macOS Seatbelt sandbox that
+- **It can't touch what it shouldn't.** Treks run inside a macOS Seatbelt sandbox that
   denies reads of your other repos and secrets and confines writes to the worktree.
 
 The model is a swappable part. Scouts run through [`pi`](https://pi.dev) against any
@@ -34,7 +34,7 @@ Config lives in `.scout/config.toml`:
 provider = "openrouter"                 # or "ollama" / "lmstudio" for local
 model    = "moonshotai/kimi-k3"          # any model the provider serves
 gate     = "uvx ruff check scout.py scoutlib tests && uv run pytest -q"
-sandbox  = true                          # confine build sorties with Seatbelt
+sandbox  = true                          # confine build treks with Seatbelt
 # exclude = ["devlog"]                    # sparse-checkout paths out of the worktree
 ```
 
@@ -48,10 +48,10 @@ to run without one.
 
 ## Use it
 
-### Recon — ask about a codebase (read-only, safe)
+### Survey — ask about a codebase (read-only, safe)
 
 ```
-python scout.py --recon "How does the server pick its listen port?" --repo ~/code/glass
+python scout.py --survey "How does the server pick its listen port?" --repo ~/code/glass
 ```
 
 Reads the target and answers in prose with file citations. This is the strongest use and
@@ -73,20 +73,20 @@ subtly wrong (narrowing an exception, special-casing a contradiction); the gate 
 *broken*, only your eyes catch *wrong*.
 
 Building **another** repo requires that repo to have its own `.scout/config.toml` with a
-`gate` — each repo defines what "passing" means. The sortie archive lands in scout's
+`gate` — each repo defines what "passing" means. The trek's archive lands in scout's
 central notebook; the branch lands in the target.
 
 > **Sandbox note (macOS):** before a sandboxed build, scout pre-warms the gate's
 > environment (runs it once, unsandboxed) so the scout *reuses* it rather than
 > provisioning under the sandbox — provisioning a Python env inside `sandbox-exec` can
-> intermittently deadlock (same family as fan-out concurrency). If a sandboxed build ever
+> intermittently deadlock (same family as search-party concurrency). If a sandboxed build ever
 > hangs, kill and retry; `prewarm = false` disables the pre-warm, `sandbox = false` skips
-> the sandbox for that repo. Recon/fan-out are unaffected.
+> the sandbox for that repo. Surveys and search parties are unaffected.
 
-### Fan-out — ask a panel of different models at once
+### Search party — ask a panel of different models at once
 
 ```
-python scout.py --fanout "How does the server pick its port?" --repo ~/code/glass
+python scout.py --search-party "How does the server pick its port?" --repo ~/code/glass
 ```
 
 Runs the question against every model in the config `panel` and prints a JSON comparison
@@ -110,15 +110,19 @@ questions across the panel at once (coverage + agreement in one shot).
 All three must hold: the job is **small and clearly defined**, there's a **mechanical
 check** for it (tests or a lint rule), and you're **willing to read the result**. If
 you'd anxiously wait on the output, or you can't check it mechanically, don't send a
-scout — coming back empty-handed is honorable, but so is not dispatching in the first
-place.
+scout — coming back empty-handed is honorable, but so is not sending one out in the
+first place.
 
 ## What you get back
 
-Every sortie is archived under `.scout-agent-notebook/sorties/<id>/`: the objective, the
+Every trek is archived under `.scout-agent-notebook/sorties/<id>/`: the objective, the
 model's report, the full session journal, the diff, the gate log, and a `manifest.json`
-with status, timing, and token/cost usage. Survivors keep a `scout/<id>` branch; failures
-are torn down without ceremony. `index.jsonl` is the flat log of every run.
+with status, timing, and token/cost usage. Treks that clear keep a `scout/<id>` branch;
+the rest are torn down without ceremony. `index.jsonl` is the flat log of every run.
+
+(Archive paths and manifest fields keep the project's original vocabulary — `sorties/`,
+`recon-complete` — as do code identifiers and the model-facing prompts. Those are frozen
+experimental surfaces, not drift; docs and CLI output speak trek/survey/search party.)
 
 ## Repo map
 
@@ -126,13 +130,13 @@ This is a working research harness, not a packaged product — and the repo read
 inverted from a normal project. Usually the library is the product and the tests defend
 it; here **the harness is the product, and the "library" is evidence it works**.
 
-- **`scout.py`** — the instrument. The whole harness, one file on purpose: recon,
-  build, and fan-out all dispatch from here.
-- **`scoutlib/`** — the cargo. Modules built *by* sorties and merged only after they
-  cleared the gate. Nothing in the harness imports them; they're proof, not
-  infrastructure.
+- **`scout.py`** — the instrument. The whole harness, one file on purpose: surveys,
+  builds, and search parties all launch from here.
+- **`scoutlib/`** — the cargo. Modules built by scouts on past treks and merged only
+  after they cleared the gate. Nothing in the harness imports them; they're proof,
+  not infrastructure.
 - **`tests/`** — the gate's teeth. `test_harness.py` covers the harness itself; the
-  rest began life as specs handed to sorties ("make these pass") and stayed on as
+  rest began life as specs handed to scouts ("make these pass") and stayed on as
   regression tests.
 - **`tools/`** — the measurement rig: the model-evaluation batteries, the session
   auditor, and the Seatbelt profiles (`*.sb`). The fixtures in `tools/gamut/` are
@@ -142,4 +146,4 @@ it; here **the harness is the product, and the "library" is evidence it works**.
 - **`install.sh`** + **`.claude/skills/`** — distribution: a `scout` launcher for
   your PATH and the skill that teaches an agent to use it.
 - **`.scout/config.toml`** — provider, model, panel, gate. `.scout-agent-notebook/`
-  (gitignored) accumulates every sortie's full archive.
+  (gitignored) accumulates every trek's full archive.

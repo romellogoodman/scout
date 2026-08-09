@@ -427,7 +427,7 @@ def run_recon(question: str, target: Path, cfg: dict) -> dict:
             journal.append(text)
             if type(msg).__name__ == "AssistantResponse":
                 last_assistant.append(text)
-            print(f"[recon] {' '.join(text.split())[:200]}", file=sys.stderr, flush=True)
+            print(f"[survey] {' '.join(text.split())[:200]}", file=sys.stderr, flush=True)
 
         try:
             model = lms.llm(cfg["model"])
@@ -437,7 +437,7 @@ def run_recon(question: str, target: Path, cfg: dict) -> dict:
                 chat, make_recon_tools(target),
                 max_prediction_rounds=cfg["recon_max_rounds"],
                 on_message=on_message,
-                on_round_start=lambda i: print(f"[recon] round {i + 1}", file=sys.stderr, flush=True),
+                on_round_start=lambda i: print(f"[survey] round {i + 1}", file=sys.stderr, flush=True),
                 handle_invalid_tool_request=lambda e, r: (
                     f"Your tool call could not be parsed ({e}). "
                     "Re-issue it as a single valid tool call."),
@@ -445,12 +445,12 @@ def run_recon(question: str, target: Path, cfg: dict) -> dict:
             rounds = result.rounds
         except (RuntimeError, OSError, lms.LMStudioError) as e:
             act_error = f"{type(e).__name__}: {e}"
-            print(f"[recon] act failed: {act_error}", file=sys.stderr, flush=True)
+            print(f"[survey] act failed: {act_error}", file=sys.stderr, flush=True)
         report_text = _strip_think(last_assistant[-1]) if last_assistant else "(no report)"
         journal_text = "\n\n---\n\n".join(journal) or "(no messages)"
     else:
         profile = _pi_profile("recon") if cfg["sandbox"] else None
-        print(f"[recon] pi {cfg['provider']}/{cfg['model']}"
+        print(f"[survey] pi {cfg['provider']}/{cfg['model']}"
               f"{' (sandboxed)' if profile else ''}", file=sys.stderr, flush=True)
         r = run_pi_agent(cwd=target, cfg=cfg, system_prompt=PI_RECON_PROMPT,
                          user_msg=f"Question: {question}", read_only=True,
@@ -750,61 +750,61 @@ def run_sortie(objective: str, repo: Path, cfg: dict) -> dict:
 
 def main() -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="dispatch one scout sortie")
+    ap = argparse.ArgumentParser(description="send a scout on one trek")
     ap.add_argument("objective", nargs="?",
-                    help="the objective (build) or question (recon/fan-out)")
-    ap.add_argument("--recon", action="store_true",
-                    help="read-only recon: no worktree, no gate, prose answer")
-    ap.add_argument("--fanout", action="store_true",
-                    help="heterogeneous recon: ask the question of every model in "
+                    help="the objective (build) or question (survey/search party)")
+    ap.add_argument("--survey", "--recon", action="store_true",
+                    help="read-only survey: no worktree, no gate, prose answer")
+    ap.add_argument("--search-party", "--fanout", action="store_true",
+                    help="heterogeneous survey: ask the question of every model in "
                          "the config panel at once; emits a JSON comparison on stdout")
     ap.add_argument("--questions", type=Path, default=None,
-                    help="fan-out only: a file of questions (one per line) instead "
-                         "of / in addition to the positional question")
+                    help="search party only: a file of questions (one per line) "
+                         "instead of / in addition to the positional question")
     ap.add_argument("--repo", type=Path, default=None,
-                    help="target repository (default: scout's own repo). Recon/"
-                         "fan-out read it; build operates on it and uses its "
+                    help="target repository (default: scout's own repo). Surveys and "
+                         "search parties read it; build operates on it and uses its "
                          "own .scout/config.toml gate.")
     args = ap.parse_args()
 
-    # Recon/fan-out use scout's own config (your models/panel; no gate needed).
-    # Build uses the TARGET repo's config, because the gate must match that repo.
+    # Surveys/search parties use scout's own config (your models/panel; no gate
+    # needed). Build uses the TARGET repo's config: the gate must match that repo.
     try:
-        if args.fanout:
+        if args.search_party:
             target = (args.repo or SCOUT_HOME).resolve()
             if not target.is_dir():
-                raise ScoutError(f"recon target is not a directory: {target}")
+                raise ScoutError(f"survey target is not a directory: {target}")
             cfg = load_config(SCOUT_HOME)
             questions = [args.objective] if args.objective else []
             if args.questions:
                 questions += [ln.strip() for ln in
                               args.questions.read_text().splitlines() if ln.strip()]
             if not questions:
-                raise ScoutError("fan-out needs a question (positional or --questions)")
-            print(f"[fanout] {len(questions)}q x {len(cfg['panel'])} models "
+                raise ScoutError("search party needs a question (positional or --questions)")
+            print(f"[search-party] {len(questions)}q x {len(cfg['panel'])} models "
                   f"= {len(questions) * len(cfg['panel'])} scouts: "
                   f"{', '.join(cfg['panel'])}", file=sys.stderr, flush=True)
             summary = run_recon_fanout(questions, target, cfg, cfg["panel"])
             print(json.dumps(summary, indent=2))
             _print_fanout_digest(summary)
             return 0
-        if args.recon:
+        if args.survey:
             if not args.objective:
-                raise ScoutError("recon needs a question")
+                raise ScoutError("survey needs a question")
             target = (args.repo or SCOUT_HOME).resolve()
             if not target.is_dir():
-                raise ScoutError(f"recon target is not a directory: {target}")
+                raise ScoutError(f"survey target is not a directory: {target}")
             cfg = load_config(SCOUT_HOME)
             m = run_recon(args.objective, target, cfg)
             t = m["timing"]
-            print(f"\nrecon {m['id']}  status={m['status']}  "
+            print(f"\nsurvey {m['id']}  status={m['status']}  "
                   f"[{m['provider']}/{m['model']}]")
             print(f"inference {t['inference_s']}s | {_usage_line(m['usage'])}")
             if m["act_error"]:
                 print(f"error: {m['act_error']}", file=sys.stderr)
             return 0 if m["status"] == "recon-complete" else 1
         if not args.objective:
-            raise ScoutError("need an objective (or --recon/--fanout with a question)")
+            raise ScoutError("need an objective (or --survey/--search-party with a question)")
         target = (args.repo or SCOUT_HOME).resolve()
         if not (target / ".git").exists():
             raise ScoutError(f"build target is not a git repo: {target}")
@@ -814,7 +814,7 @@ def main() -> int:
         print(f"scout: {e}", file=sys.stderr)
         return 1
     t = m["timing"]
-    print(f"\nsortie {m['id']}  status={m['status']} ({m['exit_reason']})  "
+    print(f"\ntrek {m['id']}  status={m['status']} ({m['exit_reason']})  "
           f"[{m['provider']}/{m['model']}]")
     print(f"setup {t['setup_s']}s | inference {t['inference_s']}s | "
           f"gate {t['gate_s']}s | teardown {t['teardown_s']}s | total {t['total_s']}s")
@@ -838,7 +838,7 @@ def _usage_line(usage: dict | None) -> str:
 def _print_fanout_digest(summary: dict) -> None:
     """Compact, human-scannable digest to stderr (stdout stays clean JSON)."""
     w = sys.stderr
-    print(f"\n=== recon fan-out: {summary['sorties']} scouts, "
+    print(f"\n=== search party: {summary['sorties']} scouts, "
           f"${summary['total_cost_usd']:.4f} ===", file=w)
     for res in summary["results"]:
         jac = res["citation_jaccard"]

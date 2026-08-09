@@ -1,21 +1,26 @@
 # scout
 
 Scout is a harness for disposable, verifiable delegation — the substrate a frontier
-model orchestrates through, not the orchestrator. It dispatches one-shot AI coding
-**sorties**: one objective, one throwaway git worktree, one mechanical gate (lint +
-tests), archived and torn down. Survivors keep a branch; a human reads the diff and
-decides. `README.md` is the user-facing usage; `devlog/README.md` is the running
-narrative of *why* the design is what it is.
+model orchestrates through, not the orchestrator. It sends out one-shot AI coding
+**treks**: one objective, one throwaway git worktree, one mechanical gate (lint +
+tests), archived and torn down. Treks that clear keep a branch; a human reads the
+diff and decides. `README.md` is the user-facing usage; `devlog/README.md` is the
+running narrative of *why* the design is what it is.
+
+Vocabulary: docs and CLI output say **trek** (one run), **survey** (read-only),
+**search party** (panel). Code identifiers, archive paths, and the model-facing
+prompts keep the original sortie/recon/fanout terms — frozen experimental surfaces,
+not drift. Old devlog entries keep the old words; they're the record.
 
 ## Stack & layout
 
-- **`scout.py`** — the whole harness, one file on purpose. CLI in `main()`; build sorties
-  in `run_sortie`, read-only recon in `run_recon`, the pi backend in `run_pi_agent`.
-- **`scoutlib/`** — real modules, each built *by* a sortie rather than hand-written.
+- **`scout.py`** — the whole harness, one file on purpose. CLI in `main()`; build treks
+  in `run_sortie`, read-only surveys in `run_recon`, the pi backend in `run_pi_agent`.
+- **`scoutlib/`** — real modules, each built *by* a scout on a trek, not hand-written.
 - **`tools/`** — model-evaluation batteries and the Seatbelt sandbox profiles (`*.sb`);
   each script documents itself in its header comment.
 - **`.scout/config.toml`** — provider, model, gate, sandbox. `.scout-agent-notebook/`
-  (gitignored) holds every sortie's full archive.
+  (gitignored) holds every trek's full archive.
 
 Python 3.12+ (uses `tomllib`). Inference runs through the [`pi`](https://pi.dev) CLI
 against OpenRouter by default; the model is a swappable config value, never hardcoded.
@@ -41,6 +46,6 @@ That is the gate. Use `uv run` (not bare `python`) — the harness needs the pro
 
 ## After doing work
 
-Write a devlog entry when sorties ran, a decision was made or reversed, or a measurement
+Write a devlog entry when treks ran, a decision was made or reversed, or a measurement
 surprised you — numbers included, the misses especially. Use the `devlog` skill;
 conventions are in `devlog/README.md`. Skip it for routine edits with nothing learned.
