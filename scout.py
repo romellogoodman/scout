@@ -31,6 +31,11 @@ NOTEBOOK = ".scout-agent-notebook"
 WORKTREES = ".scout-worktrees"
 TOOL_OUTPUT_CAP = 8000
 
+# Where scout itself lives: the sandbox profiles and the central notebook. This
+# is distinct from the repo a sortie operates on — recon/build can target any
+# repo (--repo), but the profiles and the archive always come from here.
+SCOUT_HOME = Path(__file__).resolve().parent
+
 RECON_PROMPT = """\
 You are a scout on a reconnaissance sortie: answer a question about the
 repository you are standing in. You have read-only tools: list_files,
@@ -306,14 +311,14 @@ def _import_lmstudio():
     return lms
 
 
-def _pi_profile(repo_root: Path, kind: str) -> Path | None:
-    """Locate the Seatbelt profile for a build or recon run. Returns None when the
-    platform can't sandbox (non-macOS, or sandbox-exec/profile absent) — the run
-    then proceeds unconfined rather than failing."""
+def _pi_profile(kind: str) -> Path | None:
+    """Locate the Seatbelt profile (from SCOUT_HOME, not the target repo). Returns
+    None when the platform can't sandbox (non-macOS, or sandbox-exec/profile
+    absent) — the run then proceeds unconfined rather than failing."""
     if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
         return None
     name = "scout_sandbox_recon.sb" if kind == "recon" else "scout_sandbox.sb"
-    p = repo_root / "tools" / name
+    p = SCOUT_HOME / "tools" / name
     return p if p.exists() else None
 
 
@@ -409,12 +414,13 @@ def run_pi_agent(*, cwd: Path, cfg: dict, system_prompt: str, user_msg: str,
             "session": sess, "session_parent": sess_parent}
 
 
-def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
-    """A recon sortie: read-only, no worktree, no gate, no branch. Prose out."""
+def run_recon(question: str, target: Path, cfg: dict) -> dict:
+    """A recon sortie: read-only, no worktree, no gate, no branch. Prose out.
+    Reads `target` (any repo); archives to SCOUT_HOME's notebook."""
     started = datetime.now(tz=UTC)
     sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
            f"-recon-{crude_slug(question, 32)}")
-    sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
+    sortie_dir = SCOUT_HOME / NOTEBOOK / "sorties" / sid
     timing: dict[str, float] = {}
 
     report_text, journal_text, rounds, usage, act_error = "(no report)", "(no messages)", None, None, None
@@ -453,12 +459,12 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
         report_text = _strip_think(last_assistant[-1]) if last_assistant else "(no report)"
         journal_text = "\n\n---\n\n".join(journal) or "(no messages)"
     else:
-        profile = _pi_profile(repo_root, "recon") if cfg["sandbox"] else None
+        profile = _pi_profile("recon") if cfg["sandbox"] else None
         print(f"[recon] pi {cfg['provider']}/{cfg['model']}"
               f"{' (sandboxed)' if profile else ''}", file=sys.stderr, flush=True)
         r = run_pi_agent(cwd=target, cfg=cfg, system_prompt=PI_RECON_PROMPT,
                          user_msg=f"Question: {question}", read_only=True,
-                         worktree=target, profile=profile, repo_root=repo_root,
+                         worktree=target, profile=profile, repo_root=target,
                          timeout=cfg["gate_timeout"])
         report_text, journal_text, usage, act_error = (
             r["report"], r["journal"], r["usage"], r["error"])
@@ -486,7 +492,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
         "created": started.isoformat(timespec="seconds"),
     }
     (sortie_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    with _INDEX_LOCK, open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(SCOUT_HOME / NOTEBOOK / "index.jsonl", "a") as f:
         f.write(json.dumps(manifest) + "\n")
     return manifest
 
@@ -501,7 +507,7 @@ def _cited_files(report: str) -> list[str]:
     return sorted({h.rstrip(".") for h in hits})
 
 
-def run_recon_fanout(questions: list[str], target: Path, repo_root: Path,
+def run_recon_fanout(questions: list[str], target: Path,
                      cfg: dict, panel: list[str]) -> dict:
     """Ask each question of every model in `panel`, concurrently. Returns the raw
     per-model answers plus MECHANICAL agreement proxies (shared vs. divergent
@@ -511,8 +517,8 @@ def run_recon_fanout(questions: list[str], target: Path, repo_root: Path,
     tasks = [(q, m) for q in questions for m in panel]
 
     def _one(q: str, m: str) -> dict:
-        man = run_recon(q, target, repo_root, {**cfg, "model": m})
-        report = (repo_root / NOTEBOOK / "sorties" / man["id"] / "report.md").read_text()
+        man = run_recon(q, target, {**cfg, "model": m})
+        report = (SCOUT_HOME / NOTEBOOK / "sorties" / man["id"] / "report.md").read_text()
         return {
             "model": m,
             "status": man["status"],
@@ -568,38 +574,41 @@ def run_recon_fanout(questions: list[str], target: Path, repo_root: Path,
         "results": results,
         "created": datetime.now(tz=UTC).isoformat(timespec="seconds"),
     }
-    fdir = repo_root / NOTEBOOK / "fanout"
+    fdir = SCOUT_HOME / NOTEBOOK / "fanout"
     fdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%S") + "-" + os.urandom(2).hex()
     (fdir / f"{stamp}.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
 
 
-def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
+def run_sortie(objective: str, repo: Path, cfg: dict) -> dict:
+    """A build sortie against `repo` (any repo with its own .scout/config.toml).
+    Worktree + survivor branch live in `repo`; the archive lives in SCOUT_HOME."""
     started = datetime.now(tz=UTC)
     sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
            f"-{crude_slug(objective)}")
     branch = f"scout/{sid}"
-    # Sandboxed runs put the worktree in tmp: the Seatbelt profile denies ~/code,
-    # so an in-repo worktree would be unreadable to the scout. Unsandboxed runs
-    # keep it in-repo. The shared .git lives in repo_root either way; the gate
-    # (lint+tests) doesn't touch it, and commit/teardown run unsandboxed.
+    # Sandboxed runs put the worktree in tmp: the Seatbelt profile denies the
+    # target repo (REPO), so an in-repo worktree would be unreadable to the
+    # scout. Unsandboxed runs keep it in-repo. The shared .git lives in `repo`
+    # either way; the gate (lint+tests) doesn't touch it, and commit/teardown
+    # run unsandboxed.
     sandboxed = cfg["provider"] != "lmstudio" and cfg["sandbox"]
-    profile = _pi_profile(repo_root, "build") if sandboxed else None
+    profile = _pi_profile("build") if sandboxed else None
     if profile is not None:
         wt_parent = Path(tempfile.mkdtemp(prefix="scout-wt-"))
         wt = wt_parent / "wt"
     else:
         wt_parent = None
-        wt = repo_root / WORKTREES / sid
-    sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
+        wt = repo / WORKTREES / sid
+    sortie_dir = SCOUT_HOME / NOTEBOOK / "sorties" / sid
     timing: dict[str, float] = {}
 
     # -- setup: worktree on a fresh branch from HEAD
     t = time.monotonic()
     if wt_parent is None:
         wt.parent.mkdir(exist_ok=True)
-    git(repo_root, "worktree", "add", "-b", branch, str(wt), "HEAD")
+    git(repo, "worktree", "add", "-b", branch, str(wt), "HEAD")
     if cfg["exclude"]:
         git(wt, "sparse-checkout", "set", "--no-cone", "/*",
             *[f"!/{p}" for p in cfg["exclude"]])
@@ -655,7 +664,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         r = run_pi_agent(cwd=wt, cfg=cfg,
                          system_prompt=PI_BUILD_PROMPT.format(gate=cfg["gate"]),
                          user_msg=f"Objective: {objective}", read_only=False,
-                         worktree=wt, profile=profile, repo_root=repo_root,
+                         worktree=wt, profile=profile, repo_root=repo,
                          timeout=cfg["gate_timeout"])
         report_text, journal_text, usage, act_error = (
             r["report"], r["journal"], r["usage"], r["error"])
@@ -704,9 +713,9 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     # -- teardown: survivors keep their branch, everything else is discarded
     if status == "clear":
         git(wt, "commit", "-q", "-m", f"scout: {objective}")
-    git(repo_root, "worktree", "remove", "--force", str(wt))
+    git(repo, "worktree", "remove", "--force", str(wt))
     if status != "clear":
-        git(repo_root, "branch", "-D", branch)
+        git(repo, "branch", "-D", branch)
     if wt_parent is not None:
         shutil.rmtree(wt_parent, ignore_errors=True)
     timing["teardown_s"] = round(time.monotonic() - t, 2)
@@ -715,6 +724,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     manifest = {
         "id": sid,
         "objective": objective,
+        "repo": str(repo),
         "status": status,
         "exit_reason": exit_reason,
         "branch": branch if status == "clear" else None,
@@ -729,7 +739,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         "created": started.isoformat(timespec="seconds"),
     }
     (sortie_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    with _INDEX_LOCK, open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(SCOUT_HOME / NOTEBOOK / "index.jsonl", "a") as f:
         f.write(json.dumps(manifest) + "\n")
     return manifest
 
@@ -748,16 +758,19 @@ def main() -> int:
                     help="fan-out only: a file of questions (one per line) instead "
                          "of / in addition to the positional question")
     ap.add_argument("--repo", type=Path, default=None,
-                    help="target repository for recon (default: this repo)")
+                    help="target repository (default: scout's own repo). Recon/"
+                         "fan-out read it; build operates on it and uses its "
+                         "own .scout/config.toml gate.")
     args = ap.parse_args()
 
-    repo_root = Path(__file__).resolve().parent
+    # Recon/fan-out use scout's own config (your models/panel; no gate needed).
+    # Build uses the TARGET repo's config, because the gate must match that repo.
     try:
-        cfg = load_config(repo_root)
         if args.fanout:
-            target = (args.repo or repo_root).resolve()
+            target = (args.repo or SCOUT_HOME).resolve()
             if not target.is_dir():
                 raise ScoutError(f"recon target is not a directory: {target}")
+            cfg = load_config(SCOUT_HOME)
             questions = [args.objective] if args.objective else []
             if args.questions:
                 questions += [ln.strip() for ln in
@@ -767,17 +780,18 @@ def main() -> int:
             print(f"[fanout] {len(questions)}q x {len(cfg['panel'])} models "
                   f"= {len(questions) * len(cfg['panel'])} scouts: "
                   f"{', '.join(cfg['panel'])}", file=sys.stderr, flush=True)
-            summary = run_recon_fanout(questions, target, repo_root, cfg, cfg["panel"])
+            summary = run_recon_fanout(questions, target, cfg, cfg["panel"])
             print(json.dumps(summary, indent=2))
             _print_fanout_digest(summary)
             return 0
         if args.recon:
             if not args.objective:
                 raise ScoutError("recon needs a question")
-            target = (args.repo or repo_root).resolve()
+            target = (args.repo or SCOUT_HOME).resolve()
             if not target.is_dir():
                 raise ScoutError(f"recon target is not a directory: {target}")
-            m = run_recon(args.objective, target, repo_root, cfg)
+            cfg = load_config(SCOUT_HOME)
+            m = run_recon(args.objective, target, cfg)
             t = m["timing"]
             print(f"\nrecon {m['id']}  status={m['status']}  "
                   f"[{m['provider']}/{m['model']}]")
@@ -787,7 +801,11 @@ def main() -> int:
             return 0 if m["status"] == "recon-complete" else 1
         if not args.objective:
             raise ScoutError("need an objective (or --recon/--fanout with a question)")
-        m = run_sortie(args.objective, repo_root, cfg)
+        target = (args.repo or SCOUT_HOME).resolve()
+        if not (target / ".git").exists():
+            raise ScoutError(f"build target is not a git repo: {target}")
+        cfg = load_config(target)  # the target repo supplies the gate
+        m = run_sortie(args.objective, target, cfg)
     except ScoutError as e:
         print(f"scout: {e}", file=sys.stderr)
         return 1

@@ -61,14 +61,24 @@ are sometimes approximate. Read-only: no worktree, no gate, no writes.
 ### Build — make failing tests pass (writes code, gated, you review)
 
 ```
-python scout.py "Make the failing tests in tests/test_timespan.py pass"
+python scout.py "Make the failing tests in tests/test_timespan.py pass"      # this repo
+python scout.py "Make tests/test_auth.py pass" --repo /path/to/other/repo     # any repo
 ```
 
-The scout works in a git worktree, runs the gate, and keeps a branch only if the gate
-goes green. Then **you read the diff before merging** — this is not optional. Models at
-this tier occasionally produce code that passes the gate but is subtly wrong (narrowing
-an exception, special-casing a contradiction); the gate catches *broken*, only your eyes
-catch *wrong*.
+The scout works in a git worktree, runs the gate, and keeps a `scout/<id>` branch (in the
+target repo) only if the gate goes green. Then **you read the diff before merging** — this
+is not optional. Models at this tier occasionally produce code that passes the gate but is
+subtly wrong (narrowing an exception, special-casing a contradiction); the gate catches
+*broken*, only your eyes catch *wrong*.
+
+Building **another** repo requires that repo to have its own `.scout/config.toml` with a
+`gate` — each repo defines what "passing" means. The sortie archive lands in scout's
+central notebook; the branch lands in the target.
+
+> **Sandbox caveat (macOS):** sandboxed builds are reliable when the gate runs in a
+> *pre-built* environment (like scout's own `uv run pytest`). A gate that provisions a
+> Python env on the fly under the sandbox (`uvx`/`uv run` in a fresh checkout) can hang —
+> pre-build that repo's env, or set `sandbox = false` for it. Recon/fan-out are unaffected.
 
 ### Fan-out — ask a panel of different models at once
 

@@ -31,15 +31,20 @@ it" answer is honest, not a failure.
 ## Build — make failing tests pass (writes code, gated)
 
 ```
-scout "Make the failing tests in tests/test_foo.py pass"
+scout "Make the failing tests in tests/test_foo.py pass"                 # scout's own repo
+scout "Make tests/test_auth.py pass" --repo /path/to/repo                # any repo
 ```
 
 The scout works in a throwaway git worktree, runs the gate (lint + tests), and keeps a
-`scout/<id>` branch only if the gate passed. **Then you read the diff**
-(`git diff main..scout/<id>`) before trusting or merging — a change can clear the gate
-and still be subtly wrong (narrowing an exception, special-casing a contradiction). The
-gate catches *broken*; only your reading catches *wrong*. (Build targets scout's own
-repo; to build elsewhere, give that repo its own `.scout/config.toml` gate.)
+`scout/<id>` branch (in the target repo) only if the gate passed. **Then you read the
+diff** (`git -C <repo> diff main..scout/<id>`) before trusting or merging — a change can
+clear the gate and still be subtly wrong (narrowing an exception, special-casing a
+contradiction). The gate catches *broken*; only your reading catches *wrong*.
+
+Building another repo requires that repo to carry its own `.scout/config.toml` with a
+`gate`. macOS sandbox caveat: sandboxed builds can hang when the gate provisions a Python
+env on the fly (`uvx`/`uv run` in a fresh checkout); pre-build that repo's env or set
+`sandbox = false` for it. Recon/fan-out are unaffected.
 
 ## Fan-out — ask a panel of different models at once
 
