@@ -42,9 +42,10 @@ clear the gate and still be subtly wrong (narrowing an exception, special-casing
 contradiction). The gate catches *broken*; only your reading catches *wrong*.
 
 Building another repo requires that repo to carry its own `.scout/config.toml` with a
-`gate`. macOS sandbox caveat: sandboxed builds can hang when the gate provisions a Python
-env on the fly (`uvx`/`uv run` in a fresh checkout); pre-build that repo's env or set
-`sandbox = false` for it. Recon/fan-out are unaffected.
+`gate`. macOS sandbox note: scout pre-warms the gate's env before a sandboxed build so the
+scout reuses it rather than provisioning under `sandbox-exec` (which can intermittently
+deadlock). If a sandboxed build hangs, kill and retry, or set `sandbox = false` for that
+repo. Recon/fan-out are unaffected.
 
 ## Fan-out — ask a panel of different models at once
 

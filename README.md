@@ -75,10 +75,12 @@ Building **another** repo requires that repo to have its own `.scout/config.toml
 `gate` — each repo defines what "passing" means. The sortie archive lands in scout's
 central notebook; the branch lands in the target.
 
-> **Sandbox caveat (macOS):** sandboxed builds are reliable when the gate runs in a
-> *pre-built* environment (like scout's own `uv run pytest`). A gate that provisions a
-> Python env on the fly under the sandbox (`uvx`/`uv run` in a fresh checkout) can hang —
-> pre-build that repo's env, or set `sandbox = false` for it. Recon/fan-out are unaffected.
+> **Sandbox note (macOS):** before a sandboxed build, scout pre-warms the gate's
+> environment (runs it once, unsandboxed) so the scout *reuses* it rather than
+> provisioning under the sandbox — provisioning a Python env inside `sandbox-exec` can
+> intermittently deadlock (same family as fan-out concurrency). If a sandboxed build ever
+> hangs, kill and retry; `prewarm = false` disables the pre-warm, `sandbox = false` skips
+> the sandbox for that repo. Recon/fan-out are unaffected.
 
 ### Fan-out — ask a panel of different models at once
 

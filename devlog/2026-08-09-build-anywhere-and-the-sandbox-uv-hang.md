@@ -116,3 +116,40 @@ sandbox hole on macOS.
   materialize the venv) before the sandboxed sortie, so the scout's in-sandbox `uv run`
   reuses it? Cheap to try, might convert the hole into a non-issue for uv-based gates
   without a container. Untested.
+
+## Follow-up (same day): I tried the pre-warm, and the hang stopped reproducing
+
+Added the pre-warm — run the gate once unsandboxed before the sortie — and went to
+measure it. It cleared. Then I ran the *same* sandboxed `uvx pytest` build again: also
+cleared, 10s. Then four more: 4/4 clear, 6–9s each. Then the honest control — a cold-ish
+env (`uv cache clean pytest`) with pre-warm *off*: also cleared, 7s.
+
+So the headline correction: **the hang is intermittent, not deterministic, and I can no
+longer reproduce it — with or without the pre-warm.** The entry above overclaimed. What I
+called a deterministic "env-provisioning hangs under the sandbox" is really an
+*intermittent deadlock*, which is worse in one way (harder to pin) and better in another
+(it's not an every-time wall).
+
+The uncomfortable likelihood: **my own method manufactured the consistency.** I diagnosed
+this by killing `pi` mid-run over and over (perl `alarm`, bash timeouts). A `uvx`/`uv`
+process killed mid-flight can leave a stale lock in its cache; the next sandboxed `uvx`
+then blocks on that lock — so run N's kill made run N+1 hang, and the "reliable"
+reproduction was an artifact of repeated killing, not the steady state. Once I stopped
+killing (and ran a `uv cache clean`), it went quiet. The very first 6m40s hang was real
+and cold; much of the "consistent" middle was probably self-inflicted.
+
+Where that leaves the pre-warm: **kept, but honestly labeled as a mitigation, not a
+cure.** Its mechanism is sound — provision the heavy env *outside* the sandbox so the
+scout only ever *reuses* it, never *builds* it under `sandbox-exec` — and that directly
+removes the one path (cold provisioning) the original real hang took. But I couldn't
+prove it eliminates the intermittent deadlock, because I couldn't get the deadlock to
+show up again to A/B against. It's low-cost (one extra gate run on sandboxed builds only,
+`prewarm = false` to disable) and it targets a real observed failure, so it's not
+cargo-cult — but I'm not claiming it's the fix.
+
+The two real lessons: (1) **an intermittent bug plus a destructive diagnostic method
+fakes a deterministic bug** — killing the subject changed the system under test, and I
+read the artifact as the phenomenon for a good while. (2) The through-line still points
+at a container: an intermittent `sandbox-exec` + subprocess deadlock that you can't
+reliably reproduce is *exactly* the kind of thing you stop fighting and design out. Same
+conclusion as fan-out, arrived at from the opposite direction.

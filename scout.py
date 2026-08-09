@@ -144,6 +144,10 @@ def load_config(repo_root: str | Path) -> dict:
         "thinking": cfg.get("thinking"),
         # Confine pi-run sorties with the Seatbelt sandbox. Ignored for lmstudio.
         "sandbox": bool(cfg.get("sandbox", True)),
+        # Before a sandboxed build, run the gate once unsandboxed to materialize
+        # its environment (see the sandbox+uv hang in devlog). Only matters for
+        # sandboxed builds; harmless otherwise.
+        "prewarm": bool(cfg.get("prewarm", True)),
         "gate": str(gate),
         "max_rounds": int(cfg.get("max_rounds", 24)),
         "bash_timeout": int(cfg.get("bash_timeout", 180)),
@@ -613,6 +617,20 @@ def run_sortie(objective: str, repo: Path, cfg: dict) -> dict:
         git(wt, "sparse-checkout", "set", "--no-cone", "/*",
             *[f"!/{p}" for p in cfg["exclude"]])
     timing["setup_s"] = round(time.monotonic() - t, 2)
+
+    # -- pre-warm: run the gate ONCE unsandboxed, purely to materialize whatever
+    # environment it provisions (a uv venv, a uvx tool env). The scout then runs
+    # the same gate inside the sandbox and only *reuses* the warm env, never
+    # builds it under sandbox-exec — where env provisioning can intermittently
+    # deadlock (see devlog; this is a mitigation, not a proven cure). Result is
+    # ignored; tests are expected to fail here (the scout hasn't worked yet).
+    if profile is not None and cfg["prewarm"]:
+        t = time.monotonic()
+        try:
+            sh(cfg["gate"], cwd=wt, timeout=cfg["gate_timeout"], shell=True)
+        except subprocess.TimeoutExpired:
+            pass
+        timing["prewarm_s"] = round(time.monotonic() - t, 2)
 
     status, exit_reason, act_error = "error", "unknown", None
     report_text, journal_text, rounds, usage = "(no report)", "(no messages)", None, None
