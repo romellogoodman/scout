@@ -276,7 +276,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
             on_round_start=on_round_start,
             handle_invalid_tool_request=on_invalid_tool_request,
         )
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, lms.LMStudioError) as e:
         act_error = f"{type(e).__name__}: {e}"
         print(f"[recon] act failed: {act_error}", flush=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
@@ -367,7 +367,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
             on_round_start=on_round_start,
             handle_invalid_tool_request=on_invalid_tool_request,
         )
-    except (RuntimeError, OSError) as e:  # archive what we have; the notebook outlives the crash
+    except (RuntimeError, OSError, lms.LMStudioError) as e:  # archive what we have; the notebook outlives the crash
         act_error = f"{type(e).__name__}: {e}"
         print(f"[scout] act failed: {act_error}", flush=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
