@@ -4,3 +4,4 @@ gate = "uv run pytest -q"
 max_rounds = 24
 bash_timeout = 180
 gate_timeout = 600
+# exclude = ["devlog"]  # sparse-checkout paths out of sortie worktrees (blind experiments)

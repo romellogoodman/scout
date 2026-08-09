@@ -67,6 +67,10 @@ def load_config(repo_root: str | Path) -> dict:
         "max_rounds": int(cfg.get("max_rounds", 24)),
         "bash_timeout": int(cfg.get("bash_timeout", 180)),
         "gate_timeout": int(cfg.get("gate_timeout", 600)),
+        # Paths withheld from sortie worktrees via sparse-checkout (e.g. lab
+        # notes during blind experiments). Excluded files stay in history and
+        # in any commit the sortie produces; they're just absent on disk.
+        "exclude": [str(p) for p in cfg.get("exclude", [])],
     }
 
 
@@ -130,7 +134,9 @@ def make_tools(wt: Path, bash_timeout: int) -> list:
     def list_files() -> str:
         """List every file in the repository (tracked and untracked; ignored files excluded)."""
         p = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=wt)
-        return _clip(p.stdout) or "(no files)"
+        # ls-files reports sparse-excluded index entries too; list only what's on disk
+        present = [ln for ln in p.stdout.splitlines() if (wt / ln).exists()]
+        return _clip("\n".join(present)) or "(no files)"
 
     def read_file(path: str) -> str:
         """Read a file. `path` is relative to the repository root."""
@@ -190,6 +196,9 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     t = time.monotonic()
     wt.parent.mkdir(exist_ok=True)
     git(repo_root, "worktree", "add", "-b", branch, str(wt), "HEAD")
+    if cfg["exclude"]:
+        git(wt, "sparse-checkout", "set", "--no-cone", "/*",
+            *[f"!/{p}" for p in cfg["exclude"]])
     timing["setup_s"] = round(time.monotonic() - t, 2)
 
     # -- inference: the act loop
