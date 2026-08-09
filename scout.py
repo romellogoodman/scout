@@ -3,7 +3,8 @@
 
 One file on purpose. The pieces that deserve to be real modules get built *by
 sorties* (see devlog/2026-08-08-before-the-first-sortie.md) and land in scoutlib/.
-Anything here marked "crude" is a placeholder a sortie is queued to replace.
+The "crude" helpers stay even though sorties built real replacements there: the
+harness never imports its own cargo (see the 2026-08-09 devlog entry of that name).
 """
 
 from __future__ import annotations
@@ -36,11 +37,10 @@ TOOL_OUTPUT_CAP = 8000
 # repo (--repo), but the profiles and the archive always come from here.
 SCOUT_HOME = Path(__file__).resolve().parent
 
-RECON_PROMPT = """\
-You are a scout on a reconnaissance sortie: answer a question about the
-repository you are standing in. You have read-only tools: list_files,
-read_file, and grep. All paths are relative to the repository root.
-
+# The Rules blocks are shared between the SDK and pi prompt variants — only the
+# tools sentence differs. The "stop if the spec is wrong" line is load-bearing
+# (see devlog). `{gate}` in the build rules is filled in at dispatch.
+_RECON_RULES = """\
 Rules:
 - Answer only from what you actually read in this repository. If you cannot
   find the answer, say so plainly — a wrong answer is worse than no answer.
@@ -48,60 +48,51 @@ Rules:
 - Finish with a concise prose answer to the question. No code changes, no
   diffs, no speculation beyond what the files support.
 """
+
+_BUILD_RULES = """\
+Rules:
+- Work only toward the objective you are given. Make the smallest change that
+  achieves it.
+- Verify your work by running the gate command with the bash tool: `{gate}`
+- You get two gate attempts. If the gate still fails after your second attempt,
+  stop and report honestly what you tried and where it failed.
+- Coming back empty-handed is honorable. A plausible-looking but wrong change
+  is not.
+- If the objective or the tests themselves appear contradictory or wrong, stop
+  and report that instead of special-casing your way around it.
+- Finish by replying with a short plain-text report: what you changed, why, and
+  anything that surprised you. Do not paste the diff into the report.
+"""
+
+RECON_PROMPT = """\
+You are a scout on a reconnaissance sortie: answer a question about the
+repository you are standing in. You have read-only tools: list_files,
+read_file, and grep. All paths are relative to the repository root.
+
+""" + _RECON_RULES
 
 SYSTEM_PROMPT = """\
 You are a scout: a short-lived autonomous coding agent working alone in a git
 worktree checkout of a repository. You have four tools: list_files, read_file,
 write_file, and bash. All paths are relative to the repository root.
 
-Rules:
-- Work only toward the objective you are given. Make the smallest change that
-  achieves it.
-- Verify your work by running the gate command with the bash tool: `{gate}`
-- You get two gate attempts. If the gate still fails after your second attempt,
-  stop and report honestly what you tried and where it failed.
-- Coming back empty-handed is honorable. A plausible-looking but wrong change
-  is not.
-- If the objective or the tests themselves appear contradictory or wrong, stop
-  and report that instead of special-casing your way around it.
-- Finish by replying with a short plain-text report: what you changed, why, and
-  anything that surprised you. Do not paste the diff into the report.
-"""
+""" + _BUILD_RULES
 
 # pi exposes read/write/edit/bash rather than the SDK's named tools, so the pi
-# path gets prompts worded for those. The rules are otherwise identical — the
-# "stop if the spec is wrong" line is load-bearing (see devlog).
+# variants reword the tools sentence.
 PI_BUILD_PROMPT = """\
 You are a scout: a short-lived autonomous coding agent working alone in a
 checkout of a repository. You have tools to read files, write files, and run
 bash commands. All paths are relative to the repository root.
 
-Rules:
-- Work only toward the objective you are given. Make the smallest change that
-  achieves it.
-- Verify your work by running the gate command with the bash tool: `{gate}`
-- You get two gate attempts. If the gate still fails after your second attempt,
-  stop and report honestly what you tried and where it failed.
-- Coming back empty-handed is honorable. A plausible-looking but wrong change
-  is not.
-- If the objective or the tests themselves appear contradictory or wrong, stop
-  and report that instead of special-casing your way around it.
-- Finish by replying with a short plain-text report: what you changed, why, and
-  anything that surprised you. Do not paste the diff into the report.
-"""
+""" + _BUILD_RULES
 
 PI_RECON_PROMPT = """\
 You are a scout on a reconnaissance sortie: answer a question about the
 repository you are standing in. Use your tools read-only: read files and grep
 with bash. Do not modify anything.
 
-Rules:
-- Answer only from what you actually read in this repository. If you cannot
-  find the answer, say so plainly — a wrong answer is worse than no answer.
-- Cite file paths (with line numbers where useful) for every claim.
-- Finish with a concise prose answer to the question. No code changes, no
-  diffs, no speculation beyond what the files support.
-"""
+""" + _RECON_RULES
 
 
 class ScoutError(RuntimeError):
@@ -160,17 +151,19 @@ def load_config(repo_root: str | Path) -> dict:
     }
 
 
-# ---------- crude placeholders (sorties replace these) ----------
+# ---------- crude helpers (scoutlib has the sortie-built real ones; we don't
+# import our own cargo) ----------
 
 def crude_slug(text: str, max_len: int = 40) -> str:
-    """Deliberately dumb. Sortie #1 builds the real scoutlib.slugify; the harness
-    only needs *a* branch name, not a good one."""
+    """Deliberately dumb. Sortie #1 built the real scoutlib.slugify; the harness
+    keeps this one — it only needs *a* branch name, not a good one."""
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:max_len].strip("-")
     return s or "sortie"
 
 
 def crude_diff_stats(shortstat: str) -> dict:
-    """Parse `git diff --shortstat` output. Crude; sortie #4 builds the real one."""
+    """Parse `git diff --shortstat` output. Sortie #4 built scoutlib.diffstats;
+    same rule as crude_slug."""
     def grab(pattern: str) -> int:
         m = re.search(pattern, shortstat)
         return int(m.group(1)) if m else 0
@@ -208,25 +201,33 @@ def _clip(text: str, cap: int = TOOL_OUTPUT_CAP) -> str:
     return text[:cap] + f"\n[... clipped {len(text) - cap} chars]"
 
 
-def make_tools(wt: Path, bash_timeout: int) -> list:
-    wt = wt.resolve()
+def _reader_tools(root: Path):
+    """The read-side closures both tool sets share. `root` must be resolved.
+    Docstrings are the tool descriptions the model sees."""
 
     def _inside(rel: str) -> Path:
-        p = (wt / rel).resolve()
-        if p != wt and wt not in p.parents:
-            raise ValueError(f"path escapes the worktree: {rel}")
+        p = (root / rel).resolve()
+        if p != root and root not in p.parents:
+            raise ValueError(f"path escapes the repository: {rel}")
         return p
 
     def list_files() -> str:
         """List every file in the repository (tracked and untracked; ignored files excluded)."""
-        p = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=wt)
+        p = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root)
         # ls-files reports sparse-excluded index entries too; list only what's on disk
-        present = [ln for ln in p.stdout.splitlines() if (wt / ln).exists()]
+        present = [ln for ln in p.stdout.splitlines() if (root / ln).exists()]
         return _clip("\n".join(present)) or "(no files)"
 
     def read_file(path: str) -> str:
         """Read a file. `path` is relative to the repository root."""
         return _clip(_inside(path).read_text())
+
+    return _inside, [list_files, read_file]
+
+
+def make_tools(wt: Path, bash_timeout: int) -> list:
+    wt = wt.resolve()
+    _inside, tools = _reader_tools(wt)
 
     def write_file(path: str, content: str) -> str:
         """Create or overwrite a file with `content`. `path` is relative to the
@@ -250,7 +251,23 @@ def make_tools(wt: Path, bash_timeout: int) -> list:
             out += f"stderr:\n{_clip(p.stderr)}\n"
         return out
 
-    return [list_files, read_file, write_file, bash]
+    return [*tools, write_file, bash]
+
+
+def make_recon_tools(root: Path) -> list:
+    root = root.resolve()
+    _inside, tools = _reader_tools(root)
+
+    def grep(pattern: str, path: str = ".") -> str:
+        """Search file contents with a regex (like grep -rn). `path` optionally
+        limits the search to a subdirectory or single file."""
+        _inside(path)
+        p = sh(["grep", "-rn", "-I", "--exclude-dir=.git", "--exclude-dir=node_modules",
+                "--exclude-dir=.venv", "--exclude-dir=__pycache__", "--exclude-dir=dist",
+                "-e", pattern, path], cwd=root, timeout=30)
+        return _clip(p.stdout) or f"(no matches for {pattern!r})"
+
+    return [*tools, grep]
 
 
 # ---------- the sortie ----------
@@ -268,37 +285,6 @@ def _strip_think(text: str) -> str:
     """qwen3.6 leaks a stray closing think tag into content; drop everything
     through the last one so report.md reads as the report, not the reasoning."""
     return re.sub(r"^.*</think>\s*", "", text, flags=re.DOTALL)
-
-
-def make_recon_tools(root: Path) -> list:
-    root = root.resolve()
-
-    def _inside(rel: str) -> Path:
-        p = (root / rel).resolve()
-        if p != root and root not in p.parents:
-            raise ValueError(f"path escapes the repository: {rel}")
-        return p
-
-    def list_files() -> str:
-        """List every file in the repository (tracked and untracked; ignored files excluded)."""
-        p = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root)
-        present = [ln for ln in p.stdout.splitlines() if (root / ln).exists()]
-        return _clip("\n".join(present)) or "(no files)"
-
-    def read_file(path: str) -> str:
-        """Read a file. `path` is relative to the repository root."""
-        return _clip(_inside(path).read_text())
-
-    def grep(pattern: str, path: str = ".") -> str:
-        """Search file contents with a regex (like grep -rn). `path` optionally
-        limits the search to a subdirectory or single file."""
-        _inside(path)
-        p = sh(["grep", "-rn", "-I", "--exclude-dir=.git", "--exclude-dir=node_modules",
-                "--exclude-dir=.venv", "--exclude-dir=__pycache__", "--exclude-dir=dist",
-                "-e", pattern, path], cwd=root, timeout=30)
-        return _clip(p.stdout) or f"(no matches for {pattern!r})"
-
-    return [list_files, read_file, grep]
 
 
 # ---------- backends ----------

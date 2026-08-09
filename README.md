@@ -24,7 +24,8 @@ rather. The durable asset isn't the model; it's the harness and the experiments 
 
 Requires `pi` on `PATH` and, for the default provider, an OpenRouter login
 (`pi` → `/login openrouter`, or `OPENROUTER_API_KEY`). Cap your OpenRouter credits — a
-scout can read its own key, and the credit ceiling is the bound on that, not the sandbox.
+scout can read its own key, and Seatbelt can't scope network egress to one host, so the
+credit ceiling, not the sandbox, is the bound on both.
 
 Config lives in `.scout/config.toml`:
 
@@ -119,12 +120,26 @@ model's report, the full session journal, the diff, the gate log, and a `manifes
 with status, timing, and token/cost usage. Survivors keep a `scout/<id>` branch; failures
 are torn down without ceremony. `index.jsonl` is the flat log of every run.
 
-## Status
+## Repo map
 
-This is a working research harness, not a packaged product. `scout.py` is the
-single-command entry point for recon and build; the model-evaluation batteries live in
-`tools/` (see `devlog/` for what they measured and why the roster looks the way it does).
+This is a working research harness, not a packaged product — and the repo reads
+inverted from a normal project. Usually the library is the product and the tests defend
+it; here **the harness is the product, and the "library" is evidence it works**.
 
-Residuals the sandbox does not close: a scout can read its own provider API key, and
-network egress is broad (Seatbelt can't scope it to one host). Both are bounded by your
-credit cap, not the profile.
+- **`scout.py`** — the instrument. The whole harness, one file on purpose: recon,
+  build, and fan-out all dispatch from here.
+- **`scoutlib/`** — the cargo. Modules built *by* sorties and merged only after they
+  cleared the gate. Nothing in the harness imports them; they're proof, not
+  infrastructure.
+- **`tests/`** — the gate's teeth. `test_harness.py` covers the harness itself; the
+  rest began life as specs handed to sorties ("make these pass") and stayed on as
+  regression tests.
+- **`tools/`** — the measurement rig: the model-evaluation batteries, the session
+  auditor, and the Seatbelt profiles (`*.sb`). The fixtures in `tools/gamut/` are
+  deliberately broken bait for the batteries — don't fix them.
+- **`devlog/`** — the lab notebook, and half the point: what was measured, what
+  failed, and why the design is what it is.
+- **`install.sh`** + **`.claude/skills/`** — distribution: a `scout` launcher for
+  your PATH and the skill that teaches an agent to use it.
+- **`.scout/config.toml`** — provider, model, panel, gate. `.scout-agent-notebook/`
+  (gitignored) accumulates every sortie's full archive.
