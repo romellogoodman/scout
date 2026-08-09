@@ -1,6 +1,11 @@
 [scout]
 provider = "openrouter"
 model = "moonshotai/kimi-k3"
+# Heterogeneous panel for --fanout: DIFFERENT models (different labs) so their
+# blind spots decorrelate. Agreement across the panel is trustworthy; where they
+# diverge is the signal. Add a third for more coverage.
+panel = ["moonshotai/kimi-k3", "deepseek/deepseek-v4-flash-0731"]
+# fanout_workers = 1   # sequential by default; sandbox-exec deadlocks concurrently
 sandbox = true
 gate = "uvx ruff check scout.py scoutlib tests && uv run pytest -q"
 max_rounds = 24

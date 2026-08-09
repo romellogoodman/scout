@@ -15,10 +15,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
+
+# Fan-out runs many recon sorties concurrently; serialize appends to the shared
+# notebook index so their lines can't interleave.
+_INDEX_LOCK = threading.Lock()
 
 CONFIG_PATH = ".scout/config.toml"
 NOTEBOOK = ".scout-agent-notebook"
@@ -117,6 +123,17 @@ def load_config(repo_root: str | Path) -> dict:
         # "lmstudio" uses the in-process LM Studio SDK (the v0 path).
         "provider": str(cfg.get("provider", "openrouter")),
         "model": cfg.get("model", "moonshotai/kimi-k3"),
+        # The panel for heterogeneous recon fan-out: a question is asked of every
+        # model here at once. Deliberately DIFFERENT models (different labs), so
+        # their blind spots decorrelate — agreement means something, and the
+        # places they diverge are the signal. Same-model-repeated buys nothing.
+        "panel": [str(m) for m in cfg.get(
+            "panel", ["moonshotai/kimi-k3", "deepseek/deepseek-v4-flash-0731"])],
+        # Fan-out concurrency. Default 1 (sequential) because sandbox-exec +
+        # concurrent tool-spawning subprocesses deadlock on macOS; the value of
+        # fan-out is model diversity, not speed, so sequential is the honest
+        # default. Raise it only with sandbox = false.
+        "fanout_workers": int(cfg.get("fanout_workers", 1)),
         # Optional reasoning-effort passthrough for pi providers that require or
         # accept it (e.g. some models mandate thinking).
         "thinking": cfg.get("thinking"),
@@ -414,7 +431,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
             journal.append(text)
             if type(msg).__name__ == "AssistantResponse":
                 last_assistant.append(text)
-            print(f"[recon] {' '.join(text.split())[:200]}", flush=True)
+            print(f"[recon] {' '.join(text.split())[:200]}", file=sys.stderr, flush=True)
 
         try:
             model = lms.llm(cfg["model"])
@@ -424,7 +441,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
                 chat, make_recon_tools(target),
                 max_prediction_rounds=cfg["recon_max_rounds"],
                 on_message=on_message,
-                on_round_start=lambda i: print(f"[recon] round {i + 1}", flush=True),
+                on_round_start=lambda i: print(f"[recon] round {i + 1}", file=sys.stderr, flush=True),
                 handle_invalid_tool_request=lambda e, r: (
                     f"Your tool call could not be parsed ({e}). "
                     "Re-issue it as a single valid tool call."),
@@ -432,13 +449,13 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
             rounds = result.rounds
         except (RuntimeError, OSError, lms.LMStudioError) as e:
             act_error = f"{type(e).__name__}: {e}"
-            print(f"[recon] act failed: {act_error}", flush=True)
+            print(f"[recon] act failed: {act_error}", file=sys.stderr, flush=True)
         report_text = _strip_think(last_assistant[-1]) if last_assistant else "(no report)"
         journal_text = "\n\n---\n\n".join(journal) or "(no messages)"
     else:
         profile = _pi_profile(repo_root, "recon") if cfg["sandbox"] else None
         print(f"[recon] pi {cfg['provider']}/{cfg['model']}"
-              f"{' (sandboxed)' if profile else ''}", flush=True)
+              f"{' (sandboxed)' if profile else ''}", file=sys.stderr, flush=True)
         r = run_pi_agent(cwd=target, cfg=cfg, system_prompt=PI_RECON_PROMPT,
                          user_msg=f"Question: {question}", read_only=True,
                          worktree=target, profile=profile, repo_root=repo_root,
@@ -469,9 +486,93 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
         "created": started.isoformat(timespec="seconds"),
     }
     (sortie_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    with open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
         f.write(json.dumps(manifest) + "\n")
     return manifest
+
+
+# ---------- heterogeneous recon fan-out ----------
+
+def _cited_files(report: str) -> list[str]:
+    """Heuristic: pull path-like tokens (a/b/c.ext) a report cites. A mechanical
+    proxy for *what evidence a scout looked at*, not a semantic judgment — used
+    to compare panels, never to score an answer."""
+    hits = re.findall(r"(?:[\w.-]+/)+[\w.-]+\.[A-Za-z][\w]{0,5}", report)
+    return sorted({h.rstrip(".") for h in hits})
+
+
+def run_recon_fanout(questions: list[str], target: Path, repo_root: Path,
+                     cfg: dict, panel: list[str]) -> dict:
+    """Ask each question of every model in `panel`, concurrently. Returns the raw
+    per-model answers plus MECHANICAL agreement proxies (shared vs. divergent
+    citations) — never an averaged answer. Divergence is the signal: where a
+    diverse panel disagrees is where a blind spot is showing. Synthesis is the
+    caller's job; this hands back structured material to synthesize from."""
+    tasks = [(q, m) for q in questions for m in panel]
+
+    def _one(q: str, m: str) -> dict:
+        man = run_recon(q, target, repo_root, {**cfg, "model": m})
+        report = (repo_root / NOTEBOOK / "sorties" / man["id"] / "report.md").read_text()
+        return {
+            "model": m,
+            "status": man["status"],
+            "sid": man["id"],
+            "cost_usd": (man.get("usage") or {}).get("cost_usd"),
+            "cited_files": _cited_files(report),
+            "report": report.strip(),
+            "error": man.get("act_error"),
+        }
+
+    by_q: dict[str, list[dict]] = {q: [] for q in questions}
+    workers = max(1, min(cfg.get("fanout_workers", 1), len(tasks) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_one, q, m): (q, m) for q, m in tasks}
+        for fut in as_completed(futs):
+            q, m = futs[fut]
+            try:
+                by_q[q].append(fut.result())
+            except Exception as e:  # a dead scout is a row, not a crash  # noqa: BLE001
+                by_q[q].append({"model": m, "status": "error", "sid": None,
+                                "cost_usd": None, "cited_files": [], "report": "",
+                                "error": f"{type(e).__name__}: {e}"})
+
+    results = []
+    for q in questions:
+        rows = sorted(by_q[q], key=lambda r: r["model"])
+        answered = [r for r in rows if r["status"] == "recon-complete"]
+        filesets = [set(r["cited_files"]) for r in answered if r["cited_files"]]
+        shared = sorted(set.intersection(*filesets)) if filesets else []
+        union = sorted(set.union(*filesets)) if filesets else []
+        jaccard = round(len(shared) / len(union), 2) if union else None
+        flags = []
+        if len(answered) < len(rows):
+            flags.append(f"{len(rows) - len(answered)}/{len(rows)} scouts did not answer")
+        if len(answered) > 1 and jaccard is not None and jaccard < 0.5:
+            flags.append("low citation overlap — panel looked at different evidence; "
+                         "treat as low-agreement, read the reports")
+        if len(answered) > 1 and not shared and union:
+            flags.append("no file cited by every answering scout")
+        results.append({
+            "question": q, "scouts": rows, "shared_files": shared,
+            "all_cited_files": union, "citation_jaccard": jaccard, "flags": flags,
+        })
+
+    summary = {
+        "mode": "recon-fanout",
+        "target": str(target),
+        "panel": panel,
+        "questions": len(questions),
+        "sorties": len(tasks),
+        "total_cost_usd": round(sum((r["cost_usd"] or 0)
+                                    for res in results for r in res["scouts"]), 4),
+        "results": results,
+        "created": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+    }
+    fdir = repo_root / NOTEBOOK / "fanout"
+    fdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%S") + "-" + os.urandom(2).hex()
+    (fdir / f"{stamp}.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary
 
 
 def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
@@ -628,7 +729,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         "created": started.isoformat(timespec="seconds"),
     }
     (sortie_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    with open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
         f.write(json.dumps(manifest) + "\n")
     return manifest
 
@@ -636,9 +737,16 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description="dispatch one scout sortie")
-    ap.add_argument("objective", help="the objective (build) or question (recon)")
+    ap.add_argument("objective", nargs="?",
+                    help="the objective (build) or question (recon/fan-out)")
     ap.add_argument("--recon", action="store_true",
                     help="read-only recon: no worktree, no gate, prose answer")
+    ap.add_argument("--fanout", action="store_true",
+                    help="heterogeneous recon: ask the question of every model in "
+                         "the config panel at once; emits a JSON comparison on stdout")
+    ap.add_argument("--questions", type=Path, default=None,
+                    help="fan-out only: a file of questions (one per line) instead "
+                         "of / in addition to the positional question")
     ap.add_argument("--repo", type=Path, default=None,
                     help="target repository for recon (default: this repo)")
     args = ap.parse_args()
@@ -646,7 +754,26 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent
     try:
         cfg = load_config(repo_root)
+        if args.fanout:
+            target = (args.repo or repo_root).resolve()
+            if not target.is_dir():
+                raise ScoutError(f"recon target is not a directory: {target}")
+            questions = [args.objective] if args.objective else []
+            if args.questions:
+                questions += [ln.strip() for ln in
+                              args.questions.read_text().splitlines() if ln.strip()]
+            if not questions:
+                raise ScoutError("fan-out needs a question (positional or --questions)")
+            print(f"[fanout] {len(questions)}q x {len(cfg['panel'])} models "
+                  f"= {len(questions) * len(cfg['panel'])} scouts: "
+                  f"{', '.join(cfg['panel'])}", file=sys.stderr, flush=True)
+            summary = run_recon_fanout(questions, target, repo_root, cfg, cfg["panel"])
+            print(json.dumps(summary, indent=2))
+            _print_fanout_digest(summary)
+            return 0
         if args.recon:
+            if not args.objective:
+                raise ScoutError("recon needs a question")
             target = (args.repo or repo_root).resolve()
             if not target.is_dir():
                 raise ScoutError(f"recon target is not a directory: {target}")
@@ -658,6 +785,8 @@ def main() -> int:
             if m["act_error"]:
                 print(f"error: {m['act_error']}", file=sys.stderr)
             return 0 if m["status"] == "recon-complete" else 1
+        if not args.objective:
+            raise ScoutError("need an objective (or --recon/--fanout with a question)")
         m = run_sortie(args.objective, repo_root, cfg)
     except ScoutError as e:
         print(f"scout: {e}", file=sys.stderr)
@@ -682,6 +811,26 @@ def _usage_line(usage: dict | None) -> str:
     return (f"tokens: {usage['total_tokens']} "
             f"(in {usage['input']} / out {usage['output']}) | "
             f"cost: ${usage['cost_usd']:.4f}")
+
+
+def _print_fanout_digest(summary: dict) -> None:
+    """Compact, human-scannable digest to stderr (stdout stays clean JSON)."""
+    w = sys.stderr
+    print(f"\n=== recon fan-out: {summary['sorties']} scouts, "
+          f"${summary['total_cost_usd']:.4f} ===", file=w)
+    for res in summary["results"]:
+        jac = res["citation_jaccard"]
+        agree = "n/a" if jac is None else f"{jac:.0%} citation overlap"
+        print(f"\nQ: {res['question']}", file=w)
+        print(f"   agreement: {agree}   "
+              f"shared files: {', '.join(res['shared_files']) or '(none)'}", file=w)
+        for s in res["scouts"]:
+            tag = s["status"] if s["status"] == "recon-complete" else f"!{s['status']}"
+            cost = f"${s['cost_usd']:.4f}" if s["cost_usd"] else "-"
+            print(f"     [{tag:16}] {s['model']:34} "
+                  f"{len(s['cited_files'])} files  {cost}", file=w)
+        for flag in res["flags"]:
+            print(f"   ⚠ {flag}", file=w)
 
 
 if __name__ == "__main__":

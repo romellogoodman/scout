@@ -63,6 +63,28 @@ this tier occasionally produce code that passes the gate but is subtly wrong (na
 an exception, special-casing a contradiction); the gate catches *broken*, only your eyes
 catch *wrong*.
 
+### Fan-out — ask a panel of different models at once
+
+```
+python scout.py --fanout "How does the server pick its port?" --repo ~/code/glass
+```
+
+Runs the question against every model in the config `panel` and prints a JSON comparison
+on stdout (plus a human digest on stderr). The panel is **deliberately heterogeneous** —
+different models from different labs — because that's the only thing multiplicity uniquely
+buys you: decorrelated blind spots. Ten copies of one model just agree with themselves.
+
+Scouts run **sequentially by default** (`fanout_workers = 1`): the value here is model
+diversity, not speed, and `sandbox-exec` deadlocks under concurrent tool-spawning on
+macOS. Raise `fanout_workers` only with `sandbox = false`.
+
+The output does **not** average the answers. It hands back each model's answer plus a
+mechanical agreement proxy — which files each scout cited, and how much they overlap.
+**Where the panel agrees, trust it; where it diverges, a blind spot is showing** and you
+should read the reports. Synthesis is the caller's job; scout gives you the raw material
+and flags the disagreement. Pass `--questions FILE` (one per line) to run several
+questions across the panel at once (coverage + agreement in one shot).
+
 ## When to send a scout
 
 All three must hold: the job is **small and clearly defined**, there's a **mechanical
