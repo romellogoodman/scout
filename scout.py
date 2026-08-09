@@ -162,10 +162,18 @@ def make_tools(wt: Path, bash_timeout: int) -> list:
 # ---------- the sortie ----------
 
 def _msg_text(msg) -> str:
+    """Pull the text parts out of an SDK message; fall back to the raw repr."""
     try:
-        return str(msg)
+        parts = [t for p in getattr(msg, "content", []) if (t := getattr(p, "text", None))]
+        return "\n".join(parts) if parts else str(msg)
     except Exception:
         return repr(msg)
+
+
+def _strip_think(text: str) -> str:
+    """qwen3.6 leaks a stray closing think tag into content; drop everything
+    through the last one so report.md reads as the report, not the reasoning."""
+    return re.sub(r"^.*</think>\s*", "", text, flags=re.DOTALL)
 
 
 def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
@@ -254,7 +262,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     (sortie_dir / "objective.md").write_text(objective + "\n")
     (sortie_dir / "journal.md").write_text("\n\n---\n\n".join(journal) or "(no messages)\n")
     (sortie_dir / "report.md").write_text(
-        (last_assistant[-1] if last_assistant else "(no report)") + "\n")
+        (_strip_think(last_assistant[-1]) if last_assistant else "(no report)") + "\n")
     (sortie_dir / "diff.patch").write_text(diff_text)
     (sortie_dir / "gate.log").write_text(gate_log)
 
