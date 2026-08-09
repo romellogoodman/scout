@@ -1,13 +1,17 @@
-;; Seatbelt profile for scout sorties.
+;; Seatbelt profile for scout build sorties.
 ;; Goal: a scout's shell can touch its worktree and the tool caches it needs
 ;; to run the gate, and nothing else on the machine. Reads of other repos and
 ;; secrets are denied; writes anywhere but the worktree, tmp, and caches are
 ;; denied (no ~/.zshrc append, no cron, no git hooks in other repos).
 ;;
-;; Invoke: sandbox-exec -D WORKTREE=<abs> -f scout_sandbox.sb <cmd...>
+;; Parameters (all passed via sandbox-exec -D):
+;;   HOME     — the user's home directory
+;;   REPO     — scout's own repo root (denied, so a sortie can't read the
+;;              notebook/devlog of other runs — keeps blind experiments blind)
+;;   WORKTREE — the sortie's worktree (writable; normally a tmp dir)
 ;;
 ;; Known residual (v1): network egress is broad (Seatbelt can't scope it to one
-;; host), and the scout can still read its own OpenRouter key via pi's config.
+;; host), and the scout can still read its own provider key via pi's config.
 ;; Both are bounded by the OpenRouter credit cap, not by this profile.
 
 (version 1)
@@ -15,30 +19,31 @@
 
 ;; ---- reads: deny the crown jewels and every other repo ----
 (deny file-read*
-  (subpath "/Users/romello/code")               ; all other repos + scout's own notebook/devlog (blinding)
-  (subpath "/Users/romello/.ssh")
-  (subpath "/Users/romello/.aws")
-  (subpath "/Users/romello/.gnupg")
-  (subpath "/Users/romello/.config/gh")
-  (subpath "/Users/romello/.config/gcloud")
-  (subpath "/Users/romello/.claude")
-  (subpath "/Users/romello/.pi/agent/sessions")  ; other pi sessions (cross-run contamination)
-  (subpath "/Users/romello/Desktop")
-  (subpath "/Users/romello/Documents")
-  (subpath "/Users/romello/Library/Keychains")
-  (literal "/Users/romello/.netrc")
-  (literal "/Users/romello/.npmrc")
-  (literal "/Users/romello/.zsh_history")
-  (literal "/Users/romello/.bash_history"))
+  (subpath (param "REPO"))                                     ; scout's own tree: notebook/devlog (blinding)
+  (subpath (string-append (param "HOME") "/code"))             ; sibling repos, if kept under ~/code
+  (subpath (string-append (param "HOME") "/.ssh"))
+  (subpath (string-append (param "HOME") "/.aws"))
+  (subpath (string-append (param "HOME") "/.gnupg"))
+  (subpath (string-append (param "HOME") "/.config/gh"))
+  (subpath (string-append (param "HOME") "/.config/gcloud"))
+  (subpath (string-append (param "HOME") "/.claude"))
+  (subpath (string-append (param "HOME") "/.pi/agent/sessions"))  ; other pi sessions (cross-run contamination)
+  (subpath (string-append (param "HOME") "/Desktop"))
+  (subpath (string-append (param "HOME") "/Documents"))
+  (subpath (string-append (param "HOME") "/Library/Keychains"))
+  (subpath (string-append (param "HOME") "/.netrc"))
+  (subpath (string-append (param "HOME") "/.npmrc"))
+  (subpath (string-append (param "HOME") "/.zsh_history"))
+  (subpath (string-append (param "HOME") "/.bash_history")))
 
 ;; ---- writes: deny anywhere under home, then re-allow only the safe spots ----
-(deny file-write* (subpath "/Users/romello"))
+(deny file-write* (subpath (param "HOME")))
 (allow file-write*
   (subpath (param "WORKTREE"))
-  (subpath "/Users/romello/.pi")                 ; pi's own runtime state
-  (subpath "/Users/romello/.cache/uv")
-  (subpath "/Users/romello/.cache/ruff")
-  (subpath "/Users/romello/.cache/uvx")
-  (subpath "/Users/romello/.local/share/uv")     ; uvx installs tools here
-  (subpath "/Users/romello/.local/state/uv"))
+  (subpath (string-append (param "HOME") "/.pi"))              ; pi's own runtime state
+  (subpath (string-append (param "HOME") "/.cache/uv"))
+  (subpath (string-append (param "HOME") "/.cache/ruff"))
+  (subpath (string-append (param "HOME") "/.cache/uvx"))
+  (subpath (string-append (param "HOME") "/.local/share/uv")) ; uvx installs tools here
+  (subpath (string-append (param "HOME") "/.local/state/uv")))
 ;; tmp (worktree lives here) and /dev are outside home; (allow default) covers them.

@@ -6,9 +6,9 @@
 ;; target and the rest of the tree; it cannot write anywhere but tmp/caches, and
 ;; cannot read ssh keys, cloud creds, or keychains.
 ;;
-;; Invoke: sandbox-exec -D WORKTREE=<target> -f scout_sandbox_recon.sb <cmd...>
-;; (WORKTREE is accepted for call-site symmetry with the build profile; recon
-;;  grants no writes to it.)
+;; Parameters (via sandbox-exec -D): HOME — the user's home directory. REPO and
+;; WORKTREE are accepted for call-site symmetry with the build profile but unused
+;; (recon grants no writes and blinds nothing).
 ;;
 ;; Residuals (v1): broad network egress and the scout reading its own provider
 ;; key are not closed here — bounded by the OpenRouter credit cap.
@@ -18,24 +18,24 @@
 
 ;; ---- reads: deny the crown jewels ----
 (deny file-read*
-  (subpath "/Users/romello/.ssh")
-  (subpath "/Users/romello/.aws")
-  (subpath "/Users/romello/.gnupg")
-  (subpath "/Users/romello/.config/gh")
-  (subpath "/Users/romello/.config/gcloud")
-  (subpath "/Users/romello/Library/Keychains")
-  (literal "/Users/romello/.netrc")
-  (literal "/Users/romello/.npmrc")
-  (literal "/Users/romello/.zsh_history")
-  (literal "/Users/romello/.bash_history"))
+  (subpath (string-append (param "HOME") "/.ssh"))
+  (subpath (string-append (param "HOME") "/.aws"))
+  (subpath (string-append (param "HOME") "/.gnupg"))
+  (subpath (string-append (param "HOME") "/.config/gh"))
+  (subpath (string-append (param "HOME") "/.config/gcloud"))
+  (subpath (string-append (param "HOME") "/Library/Keychains"))
+  (subpath (string-append (param "HOME") "/.netrc"))
+  (subpath (string-append (param "HOME") "/.npmrc"))
+  (subpath (string-append (param "HOME") "/.zsh_history"))
+  (subpath (string-append (param "HOME") "/.bash_history")))
 
 ;; ---- writes: recon modifies nothing under home except pi/uv scratch ----
-(deny file-write* (subpath "/Users/romello"))
+(deny file-write* (subpath (param "HOME")))
 (allow file-write*
-  (subpath "/Users/romello/.pi")
-  (subpath "/Users/romello/.cache/uv")
-  (subpath "/Users/romello/.cache/ruff")
-  (subpath "/Users/romello/.cache/uvx")
-  (subpath "/Users/romello/.local/share/uv")
-  (subpath "/Users/romello/.local/state/uv"))
+  (subpath (string-append (param "HOME") "/.pi"))
+  (subpath (string-append (param "HOME") "/.cache/uv"))
+  (subpath (string-append (param "HOME") "/.cache/ruff"))
+  (subpath (string-append (param "HOME") "/.cache/uvx"))
+  (subpath (string-append (param "HOME") "/.local/share/uv"))
+  (subpath (string-append (param "HOME") "/.local/state/uv")))
 ;; tmp (pi's session) and /dev are outside home; (allow default) covers them.

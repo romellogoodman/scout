@@ -275,7 +275,19 @@ def make_recon_tools(root: Path) -> list:
     return [list_files, read_file, grep]
 
 
-# ---------- pi backend ----------
+# ---------- backends ----------
+
+def _import_lmstudio():
+    """The LM Studio SDK is an optional extra (`uv sync --extra lmstudio`); the
+    default provider is pi, which needs no Python dependency."""
+    try:
+        import lmstudio as lms
+    except ModuleNotFoundError as e:
+        raise ScoutError(
+            "provider is 'lmstudio' but the lmstudio SDK isn't installed — "
+            "run: uv sync --extra lmstudio") from e
+    return lms
+
 
 def _pi_profile(repo_root: Path, kind: str) -> Path | None:
     """Locate the Seatbelt profile for a build or recon run. Returns None when the
@@ -338,8 +350,8 @@ def _pi_journal(sess: Path) -> str:
 
 def run_pi_agent(*, cwd: Path, cfg: dict, system_prompt: str, user_msg: str,
                  read_only: bool, worktree: Path, profile: Path | None,
-                 timeout: int) -> dict:
-    """Run one pi sortie. The sandbox denies writes under ~/code and node fstat()s
+                 repo_root: Path, timeout: int) -> dict:
+    """Run one pi sortie. The sandbox denies reads under REPO and node fstat()s
     its own stdio at startup, so pi's session lands in tmp and the report comes
     back on stdout — the caller archives both. Returns report/journal/usage/error."""
     sess_parent = Path(tempfile.mkdtemp(prefix="scout-pi-"))
@@ -347,7 +359,11 @@ def run_pi_agent(*, cwd: Path, cfg: dict, system_prompt: str, user_msg: str,
 
     cmd: list[str] = []
     if profile is not None:
-        cmd += ["sandbox-exec", "-D", f"WORKTREE={worktree}", "-f", str(profile)]
+        cmd += ["sandbox-exec",
+                "-D", f"HOME={Path.home()}",
+                "-D", f"REPO={repo_root}",
+                "-D", f"WORKTREE={worktree}",
+                "-f", str(profile)]
     cmd += ["pi", "--provider", cfg["provider"], "--model", cfg["model"],
             "--system-prompt", system_prompt,
             "--no-extensions", "--no-skills", "--no-context-files",
@@ -388,7 +404,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
 
     t = time.monotonic()
     if cfg["provider"] == "lmstudio":
-        import lmstudio as lms
+        lms = _import_lmstudio()
         lms.set_sync_api_timeout(900)  # queue wait under concurrency needs headroom
         journal: list[str] = []
         last_assistant: list[str] = []
@@ -425,7 +441,8 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
               f"{' (sandboxed)' if profile else ''}", flush=True)
         r = run_pi_agent(cwd=target, cfg=cfg, system_prompt=PI_RECON_PROMPT,
                          user_msg=f"Question: {question}", read_only=True,
-                         worktree=target, profile=profile, timeout=cfg["gate_timeout"])
+                         worktree=target, profile=profile, repo_root=repo_root,
+                         timeout=cfg["gate_timeout"])
         report_text, journal_text, usage, act_error = (
             r["report"], r["journal"], r["usage"], r["error"])
         shutil.rmtree(r["session_parent"], ignore_errors=True)
@@ -493,7 +510,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     # -- inference: provider-dispatched
     t = time.monotonic()
     if cfg["provider"] == "lmstudio":
-        import lmstudio as lms  # lazy: tests and --help shouldn't need a server
+        lms = _import_lmstudio()  # lazy: tests and --help shouldn't need the SDK
         lms.set_sync_api_timeout(900)  # queue wait under concurrency; see run_recon
         journal: list[str] = []
         last_assistant: list[str] = []
@@ -537,7 +554,8 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         r = run_pi_agent(cwd=wt, cfg=cfg,
                          system_prompt=PI_BUILD_PROMPT.format(gate=cfg["gate"]),
                          user_msg=f"Objective: {objective}", read_only=False,
-                         worktree=wt, profile=profile, timeout=cfg["gate_timeout"])
+                         worktree=wt, profile=profile, repo_root=repo_root,
+                         timeout=cfg["gate_timeout"])
         report_text, journal_text, usage, act_error = (
             r["report"], r["journal"], r["usage"], r["error"])
         shutil.rmtree(r["session_parent"], ignore_errors=True)

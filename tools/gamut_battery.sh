@@ -102,7 +102,7 @@ run_pi() {  # run_pi <wt> <run_out> <system-prompt> <objective> [extra pi args..
   if [ "${SCOUT_SANDBOX:-0}" = "1" ]; then
     tmpout=$(mktemp -d); sess="$tmpout/session"
     report="$tmpout/report.md"; errlog="$tmpout/stderr.log"
-    SBX="sandbox-exec -D WORKTREE=$wt -f $REPO/tools/scout_sandbox.sb"
+    SBX="sandbox-exec -D HOME=$HOME -D REPO=$REPO -D WORKTREE=$wt -f $REPO/tools/scout_sandbox.sb"
   fi
   (cd "$wt" && ${TIMEOUT_CMD:+$TIMEOUT_CMD 900} $SBX pi \
       --provider openrouter --model "$MODEL" \
