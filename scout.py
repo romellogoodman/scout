@@ -197,6 +197,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
 
     journal: list[str] = []
     last_assistant: list[str] = []
+    parse_failures = {"n": 0}
     status, exit_reason, act_error = "error", "unknown", None
 
     def on_round_start(round_index: int) -> None:
@@ -210,6 +211,14 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         preview = " ".join(text.split())[:200]
         print(f"[scout] {preview}", flush=True)
 
+    def on_invalid_tool_request(error, request):
+        # One malformed call must not vaporize a sortie: feed the parse error
+        # back to the model as the tool result so it can re-issue the call.
+        parse_failures["n"] += 1
+        print(f"[scout] malformed tool call #{parse_failures['n']}: {error}", flush=True)
+        return (f"Your tool call could not be parsed ({error}). "
+                "Re-issue it as a single valid tool call.")
+
     t = time.monotonic()
     result = None
     try:
@@ -222,6 +231,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
             max_prediction_rounds=cfg["max_rounds"],
             on_message=on_message,
             on_round_start=on_round_start,
+            handle_invalid_tool_request=on_invalid_tool_request,
         )
     except Exception as e:  # archive what we have; the notebook outlives the crash
         act_error = f"{type(e).__name__}: {e}"
@@ -287,6 +297,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
         "gate": {"cmd": cfg["gate"], "exit_code": gate_code},
         "diff": stats,
         "rounds": result.rounds if result else None,
+        "tool_parse_failures": parse_failures["n"],
         "act_error": act_error,
         "timing": timing,
         "created": started.isoformat(timespec="seconds"),
