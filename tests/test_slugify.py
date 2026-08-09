@@ -1,8 +1,4 @@
-"""Planted failing tests — sortie #1's objective.
-
-scoutlib.slugify does not exist yet. A scout is dispatched to make these pass.
-The harness's crude_slug stays dumb on purpose; this is the real one.
-"""
+"""Tests for scoutlib.slugify."""
 
 from scoutlib.slugify import slugify
 
@@ -34,3 +30,7 @@ def test_truncates_at_word_boundary():
 def test_empty_or_symbol_only_falls_back():
     assert slugify("") == "sortie"
     assert slugify("!!!") == "sortie"
+
+
+def test_preserves_diacritics_in_names():
+    assert slugify("Zoë's café") == "zoë-s-café"
