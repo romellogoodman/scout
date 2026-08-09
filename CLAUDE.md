@@ -1,9 +1,11 @@
 # scout
 
-Scout dispatches one-shot AI coding **sorties**: one objective, one throwaway git
-worktree, one mechanical gate (lint + tests), archived and torn down. Survivors keep a
-branch; a human reads the diff and decides. `README.md` is the user-facing usage;
-`devlog/README.md` is the running narrative of *why* the design is what it is.
+Scout is a harness for disposable, verifiable delegation — the substrate a frontier
+model orchestrates through, not the orchestrator. It dispatches one-shot AI coding
+**sorties**: one objective, one throwaway git worktree, one mechanical gate (lint +
+tests), archived and torn down. Survivors keep a branch; a human reads the diff and
+decides. `README.md` is the user-facing usage; `devlog/README.md` is the running
+narrative of *why* the design is what it is.
 
 ## Stack & layout
 

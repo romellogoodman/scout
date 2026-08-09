@@ -1,5 +1,8 @@
 # scout
 
+**Scout is a harness for disposable, verifiable delegation — the substrate a frontier
+model orchestrates through, not the orchestrator.**
+
 Hand a small, well-defined coding job to a cheap model, in a box where it can't do
 harm and can't fake success. You give it one objective and one repository; it works
 alone in a throwaway checkout; it only "passes" if a real gate (lint + tests) agrees;
@@ -33,6 +36,10 @@ gate     = "uvx ruff check scout.py scoutlib tests && uv run pytest -q"
 sandbox  = true                          # confine build sorties with Seatbelt
 # exclude = ["devlog"]                    # sparse-checkout paths out of the worktree
 ```
+
+`./install.sh` puts a `scout` launcher on your PATH (so you can call it from any repo)
+and installs a skill under `~/.claude/skills/scout/` that teaches an agent how to use it.
+Pass `--symlink` to keep the skill live-linked to this repo instead of copied.
 
 The **gate is yours to write and it is load-bearing** — a scout will faithfully satisfy
 whatever you specify, including a bad spec. A missing gate is a hard error; scout refuses

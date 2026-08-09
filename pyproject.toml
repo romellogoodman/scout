@@ -1,6 +1,7 @@
 [project]
 name = "scout"
 version = "0.1.0"
+description = "A harness for disposable, verifiable delegation — the substrate a frontier model orchestrates through, not the orchestrator."
 requires-python = ">=3.12"
 # No hard runtime deps: the default backend is the external `pi` CLI. The LM
 # Studio SDK is only needed for provider = "lmstudio" — install with the extra.
