@@ -83,6 +83,9 @@ docstring saying what the package is, placed exactly where the confusion starts.
   failure — a slug collision, a garbage branch name from a unicode objective — do we
   fix the crude one in place, or does the boundary bend? Betting on fix-in-place, but
   that's a guess until it happens.
-- Whether the no-import rule should be enforced mechanically (a test that asserts
-  scout.py's imports exclude scoutlib) or left as documentation. A test would make
-  the boundary survive a future session that doesn't read this entry.
+- ~~Whether the no-import rule should be enforced mechanically or left as
+  documentation.~~ Resolved same session: Romello opted to enforce it.
+  `test_the_harness_never_imports_its_cargo` (tests/test_harness.py) walks
+  scout.py's AST and fails on any scoutlib import — verified against a planted
+  violation before landing. The boundary now survives a future session that
+  doesn't read this entry, because the gate reads it for them.
