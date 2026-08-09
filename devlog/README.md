@@ -11,6 +11,7 @@ One file per entry, `YYYY-MM-DD-slug.md`. Newest first.
 
 | Date | Entry | What it covers |
 |------|-------|----------------|
+| 2026-08-09 | [Three experiments in the value regimes](2026-08-09-three-experiments.md) | Recon 4/4 on scoped questions (beat the grader once); fan-out 5/5 at ~2.5×, quality anti-correlated with effort; sunk-spec works but debt supply is the constraint; the v1 shape |
 | 2026-08-09 | [The order beats the escape hatch](2026-08-09-the-order-beats-the-escape-hatch.md) | Blind replication: detection reliable, restraint isn't; #2b's refusal was the devlog's doing; authority gradient → stopping must be an action, not disobedience |
 | 2026-08-09 | [The flare fired](2026-08-09-the-flare-fired.md) | Sortie #2b: one prompt line flips confabulation → honorable empty; detection clean, stop partially contaminated; parse-abort harness bug fixed; the testbed is self-aware now |
 | 2026-08-08 | [The scout believed the bad test](2026-08-08-the-scout-believed-the-bad-test.md) | Sortie #2: contradictory test → confabulated requirement, shipped with a straight face; reports are advocacy; flare must be prompted |
