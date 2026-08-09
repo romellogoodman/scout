@@ -1,0 +1,6 @@
+[scout]
+model = "qwen/qwen3.6-27b"
+gate = "uv run pytest -q"
+max_rounds = 24
+bash_timeout = 180
+gate_timeout = 600
