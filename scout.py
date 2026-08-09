@@ -36,6 +36,8 @@ Rules:
   stop and report honestly what you tried and where it failed.
 - Coming back empty-handed is honorable. A plausible-looking but wrong change
   is not.
+- If the objective or the tests themselves appear contradictory or wrong, stop
+  and report that instead of special-casing your way around it.
 - Finish by replying with a short plain-text report: what you changed, why, and
   anything that surprised you. Do not paste the diff into the report.
 """
