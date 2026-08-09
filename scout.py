@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 CONFIG_PATH = ".scout/config.toml"
@@ -117,7 +117,7 @@ def sh(args: list[str] | str, cwd: Path, timeout: int = 120,
     # Scrub VIRTUAL_ENV so `uv run` inside a worktree resolves the worktree's own
     # env instead of warning about the harness's.
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    return subprocess.run(args, cwd=cwd, shell=shell, capture_output=True,
+    return subprocess.run(args, cwd=cwd, shell=shell, capture_output=True, check=False,
                           text=True, timeout=timeout, env=env)
 
 
@@ -188,7 +188,7 @@ def _msg_text(msg) -> str:
     try:
         parts = [t for p in getattr(msg, "content", []) if (t := getattr(p, "text", None))]
         return "\n".join(parts) if parts else str(msg)
-    except Exception:
+    except (AttributeError, TypeError):
         return repr(msg)
 
 
@@ -231,7 +231,7 @@ def make_recon_tools(root: Path) -> list:
 
 def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
     """A recon sortie: read-only, no worktree, no gate, no branch. Prose out."""
-    started = datetime.now()
+    started = datetime.now(tz=UTC)
     sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
            f"-recon-{crude_slug(question, 32)}")
     sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
@@ -276,7 +276,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
             on_round_start=on_round_start,
             handle_invalid_tool_request=on_invalid_tool_request,
         )
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         act_error = f"{type(e).__name__}: {e}"
         print(f"[recon] act failed: {act_error}", flush=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
@@ -308,7 +308,7 @@ def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
 
 
 def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
-    started = datetime.now()
+    started = datetime.now(tz=UTC)
     sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
            f"-{crude_slug(objective)}")
     branch = f"scout/{sid}"
@@ -367,7 +367,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
             on_round_start=on_round_start,
             handle_invalid_tool_request=on_invalid_tool_request,
         )
-    except Exception as e:  # archive what we have; the notebook outlives the crash
+    except (RuntimeError, OSError) as e:  # archive what we have; the notebook outlives the crash
         act_error = f"{type(e).__name__}: {e}"
         print(f"[scout] act failed: {act_error}", flush=True)
     timing["inference_s"] = round(time.monotonic() - t, 2)
