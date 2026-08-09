@@ -23,6 +23,19 @@ NOTEBOOK = ".scout-agent-notebook"
 WORKTREES = ".scout-worktrees"
 TOOL_OUTPUT_CAP = 8000
 
+RECON_PROMPT = """\
+You are a scout on a reconnaissance sortie: answer a question about the
+repository you are standing in. You have read-only tools: list_files,
+read_file, and grep. All paths are relative to the repository root.
+
+Rules:
+- Answer only from what you actually read in this repository. If you cannot
+  find the answer, say so plainly — a wrong answer is worse than no answer.
+- Cite file paths (with line numbers where useful) for every claim.
+- Finish with a concise prose answer to the question. No code changes, no
+  diffs, no speculation beyond what the files support.
+"""
+
 SYSTEM_PROMPT = """\
 You are a scout: a short-lived autonomous coding agent working alone in a git
 worktree checkout of a repository. You have four tools: list_files, read_file,
@@ -67,6 +80,7 @@ def load_config(repo_root: str | Path) -> dict:
         "max_rounds": int(cfg.get("max_rounds", 24)),
         "bash_timeout": int(cfg.get("bash_timeout", 180)),
         "gate_timeout": int(cfg.get("gate_timeout", 600)),
+        "recon_max_rounds": int(cfg.get("recon_max_rounds", 16)),
         # Paths withheld from sortie worktrees via sparse-checkout (e.g. lab
         # notes during blind experiments). Excluded files stay in history and
         # in any commit the sortie produces; they're just absent on disk.
@@ -184,9 +198,119 @@ def _strip_think(text: str) -> str:
     return re.sub(r"^.*</think>\s*", "", text, flags=re.DOTALL)
 
 
+def make_recon_tools(root: Path) -> list:
+    root = root.resolve()
+
+    def _inside(rel: str) -> Path:
+        p = (root / rel).resolve()
+        if p != root and root not in p.parents:
+            raise ValueError(f"path escapes the repository: {rel}")
+        return p
+
+    def list_files() -> str:
+        """List every file in the repository (tracked and untracked; ignored files excluded)."""
+        p = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root)
+        present = [ln for ln in p.stdout.splitlines() if (root / ln).exists()]
+        return _clip("\n".join(present)) or "(no files)"
+
+    def read_file(path: str) -> str:
+        """Read a file. `path` is relative to the repository root."""
+        return _clip(_inside(path).read_text())
+
+    def grep(pattern: str, path: str = ".") -> str:
+        """Search file contents with a regex (like grep -rn). `path` optionally
+        limits the search to a subdirectory or single file."""
+        _inside(path)
+        p = sh(["grep", "-rn", "-I", "--exclude-dir=.git", "--exclude-dir=node_modules",
+                "--exclude-dir=.venv", "--exclude-dir=__pycache__", "--exclude-dir=dist",
+                "-e", pattern, path], cwd=root, timeout=30)
+        return _clip(p.stdout) or f"(no matches for {pattern!r})"
+
+    return [list_files, read_file, grep]
+
+
+def run_recon(question: str, target: Path, repo_root: Path, cfg: dict) -> dict:
+    """A recon sortie: read-only, no worktree, no gate, no branch. Prose out."""
+    started = datetime.now()
+    sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
+           f"-recon-{crude_slug(question, 32)}")
+    sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
+    timing: dict[str, float] = {}
+
+    import lmstudio as lms
+    # Default is 60s per API call — a request queued behind n_parallel saturated
+    # decode slots dies through no fault of its own. Concurrency needs headroom.
+    lms.set_sync_api_timeout(900)
+
+    journal: list[str] = []
+    last_assistant: list[str] = []
+    parse_failures = {"n": 0}
+    act_error = None
+
+    def on_round_start(round_index: int) -> None:
+        print(f"[recon] round {round_index + 1}", flush=True)
+
+    def on_message(msg) -> None:
+        text = _msg_text(msg)
+        journal.append(text)
+        if type(msg).__name__ == "AssistantResponse":
+            last_assistant.append(text)
+        print(f"[recon] {' '.join(text.split())[:200]}", flush=True)
+
+    def on_invalid_tool_request(error, request):
+        parse_failures["n"] += 1
+        return (f"Your tool call could not be parsed ({error}). "
+                "Re-issue it as a single valid tool call.")
+
+    t = time.monotonic()
+    result = None
+    try:
+        model = lms.llm(cfg["model"])
+        chat = lms.Chat(RECON_PROMPT)
+        chat.add_user_message(f"Question: {question}")
+        result = model.act(
+            chat,
+            make_recon_tools(target),
+            max_prediction_rounds=cfg["recon_max_rounds"],
+            on_message=on_message,
+            on_round_start=on_round_start,
+            handle_invalid_tool_request=on_invalid_tool_request,
+        )
+    except Exception as e:
+        act_error = f"{type(e).__name__}: {e}"
+        print(f"[recon] act failed: {act_error}", flush=True)
+    timing["inference_s"] = round(time.monotonic() - t, 2)
+    timing["total_s"] = timing["inference_s"]
+
+    sortie_dir.mkdir(parents=True, exist_ok=True)
+    (sortie_dir / "objective.md").write_text(question + "\n")
+    (sortie_dir / "journal.md").write_text("\n\n---\n\n".join(journal) or "(no messages)\n")
+    (sortie_dir / "report.md").write_text(
+        (_strip_think(last_assistant[-1]) if last_assistant else "(no report)") + "\n")
+
+    manifest = {
+        "id": sid,
+        "mode": "recon",
+        "objective": question,
+        "target": str(target),
+        "status": "error" if act_error else "recon-complete",
+        "model": cfg["model"],
+        "rounds": result.rounds if result else None,
+        "tool_parse_failures": parse_failures["n"],
+        "act_error": act_error,
+        "timing": timing,
+        "created": started.isoformat(timespec="seconds"),
+    }
+    (sortie_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    with open(repo_root / NOTEBOOK / "index.jsonl", "a") as f:
+        f.write(json.dumps(manifest) + "\n")
+    return manifest
+
+
 def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
     started = datetime.now()
-    sid = f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{crude_slug(objective)}"
+    sid = (f"{started.strftime('%Y-%m-%dT%H-%M-%S')}-{os.urandom(2).hex()}"
+           f"-{crude_slug(objective)}")
     branch = f"scout/{sid}"
     wt = repo_root / WORKTREES / sid
     sortie_dir = repo_root / NOTEBOOK / "sorties" / sid
@@ -203,6 +327,7 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
 
     # -- inference: the act loop
     import lmstudio as lms  # lazy: tests and --help shouldn't need a server
+    lms.set_sync_api_timeout(900)  # queue wait under concurrency; see run_recon
 
     journal: list[str] = []
     last_assistant: list[str] = []
@@ -318,13 +443,28 @@ def run_sortie(objective: str, repo_root: Path, cfg: dict) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
-        print('usage: uv run python scout.py "<objective>"')
-        return 2
+    import argparse
+    ap = argparse.ArgumentParser(description="dispatch one scout sortie")
+    ap.add_argument("objective", help="the objective (build) or question (recon)")
+    ap.add_argument("--recon", action="store_true",
+                    help="read-only recon: no worktree, no gate, prose answer")
+    ap.add_argument("--repo", type=Path, default=None,
+                    help="target repository for recon (default: this repo)")
+    args = ap.parse_args()
+
     repo_root = Path(__file__).resolve().parent
     try:
         cfg = load_config(repo_root)
-        m = run_sortie(sys.argv[1], repo_root, cfg)
+        if args.recon:
+            target = (args.repo or repo_root).resolve()
+            if not target.is_dir():
+                raise ScoutError(f"recon target is not a directory: {target}")
+            m = run_recon(args.objective, target, repo_root, cfg)
+            t = m["timing"]
+            print(f"\nrecon {m['id']}  status={m['status']}")
+            print(f"inference {t['inference_s']}s | rounds: {m['rounds']}")
+            return 0 if m["status"] == "recon-complete" else 1
+        m = run_sortie(args.objective, repo_root, cfg)
     except ScoutError as e:
         print(f"scout: {e}", file=sys.stderr)
         return 1
